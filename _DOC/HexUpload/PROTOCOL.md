@@ -52,9 +52,10 @@ The device's SETU Server is shared by appType range ([_ASW/_SETU_SVC/SETURouter.
 | `0x20`–`0x2F` | Device provisioning (`_PROV`) | [../Provisioning/PROTOCOL.md](../Provisioning/PROTOCOL.md) |
 | `0x30`–`0x3F` | Device pairing (`_PAIR`), between two devices | [../Pairing/PROTOCOL.md](../Pairing/PROTOCOL.md) |
 | `0x40`–`0x4F` | File commands (`_FS_CMD`), when built with `CONFIG_FS_CMD` | [../FileSysManager/PROTOCOL.md](../FileSysManager/PROTOCOL.md) |
+| `0x50`–`0x5F` | UDS over BLE (`_ASW/_UDS`): target, diagnostic requests, unlock, flash jobs; when built with `CONFIG_UDS_CMD` | [../UDS/PROTOCOL.md](../UDS/PROTOCOL.md) |
 | others up to `0xEF` | Free | A transfer is refused (§5), a short message is logged and ignored |
 
-A new user of the Server registers a free range with `gi_SETURouter_Register()` before `gi_SETURouter_Start()` and adds it here.
+A new user of the Server registers a free range with `gi_SETURouter_Register()` before `gi_SETURouter_Start()` and adds it here. The router holds `SETU_ROUTER_MAX_ROUTES` (5) ranges, all used now: a sixth user raises it.
 
 While the Server is bound to a peer device for pairing, the router's filter (`gv_SETURouter_SetFilter()`) admits only `0x30`–`0x3F`: any other transfer is refused at START as an unknown type and any other short message is dropped, so a peer device cannot upload hex or reach provisioning.
 
@@ -129,7 +130,7 @@ so a sparse hex image keeps its addresses, and the file is `Σ (8 + length)` byt
 |---|---|
 | 0 OK | Segments are written from now on |
 | 5 BAD_ARG | The name is empty, longer than 32, or not a plain name |
-| 7 BUSY | A file is open through the file commands, or BEGIN / COMMIT came faster than the server works them off |
+| 7 BUSY | A file is open through the file commands, a UDS flash job runs ([../UDS/PROTOCOL.md](../UDS/PROTOCOL.md)), or BEGIN / COMMIT came faster than the server works them off |
 | 8 NOT_MOUNTED, 9 IO, … | The volume is not mounted, or a flash error |
 
 A BEGIN while an upload is open discards that upload (its COMMIT never came, e.g. the link was lost) and starts the new one.

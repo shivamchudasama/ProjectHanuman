@@ -19,7 +19,7 @@ frame TX and filtered RX.
   bus-off. The traffic log can be switched off so that it doesn't cost SPI and CPU time
   during a flash.
 
-This is the bottom layer of the planned ECU flashing (§9). There is no BLE access to CAN yet.
+This is the bottom layer of ECU flashing and diagnostics over UDS (§9, [../UDS/README.md](../UDS/README.md)). Raw CAN frames are not exposed over BLE; UDS is.
 
 ## 1. Hardware
 
@@ -228,27 +228,30 @@ per-module table after each build ([MemReport](../../_TOOLS/MemReport/README.md)
 - No receive timestamps (`CONFIG_CAN_RX_TIMESTAMP` is off).
 - The self-test and the test frames transmit on whatever bus is connected. Keep both off
   on a vehicle.
-- No BLE access to CAN yet. The host tests cover `CanIf` against a scripted controller.
-  Only the click itself needs the board (no `hil-tests` step yet).
+- Raw CAN frames are not exposed over BLE (UDS is, [../UDS/PROTOCOL.md](../UDS/PROTOCOL.md)).
+  The host tests cover `CanIf` against a scripted controller; only the click itself needs the
+  board (the manual `hil-uds-tests` job is a placeholder).
 
-## 9. Roadmap: ECU flashing over UDS
+## 9. UDS on top: ECU flashing and diagnostics
 
-The device will flash ECUs itself, triggered over BLE:
+The device flashes and diagnoses ECUs itself, triggered over BLE ([../UDS/README.md](../UDS/README.md)):
 
-1. A remote client uploads the ECU image over SETU. The hex upload with `--store` already
-   writes it to `/FLASH_DISK:/FW/<name>`, one `[address][length][data]` record per segment.
-   Those records map directly onto UDS RequestDownload (address and length) and TransferData
-   blocks.
-2. The same or another client triggers the flash over BLE, through a new SETU appType range
-   (e.g. `0x50`–`0x5F`; the router's `SETU_ROUTER_MAX_ROUTES` goes from 4 to 5).
-3. The device runs UDS over ISO-TP over CAN/CAN FD on its own. ISO-TP (Zephyr's
-   `CONFIG_ISOTP`, bound to `gstpt_CanIf_GetDevice()`) and a UDS flasher module with an API
-   that does not depend on BLE sit on top of `CanIf`.
-   The flasher locks the bus, configures it for the ECU, turns the traffic log off and
-   listens for bus-off. A touchscreen front-end could later call the same flasher API.
+1. A remote client uploads the ECU image over SETU. The hex upload with `--store` writes it to
+   `/FLASH_DISK:/FW/<name>`, one `[address][length][data]` record per segment. Those records map
+   directly onto UDS RequestDownload (address and length) and TransferData blocks.
+2. The same or another client triggers the flash over BLE with SETU appTypes `0x50`–`0x5F`
+   ([../UDS/PROTOCOL.md](../UDS/PROTOCOL.md)). The router now has 5 route slots.
+3. The device runs UDS over ISO-TP over CAN/CAN FD on its own:
+   - Zephyr's ISO-TP (`CONFIG_ISOTP`) is bound to `gstpt_CanIf_GetDevice()`.
+   - The UDS client is [`_LIB/UdsClient`](../../_LIB/UdsClient).
+   - The job engine [`_ASW/_UDS`](../../_ASW/_UDS) has an API that does not depend on BLE.
 
-ISO-TP is not tunnelled over BLE: the connection interval would slow every flow-control
-round trip, and a flash must not depend on the phone or PC staying connected.
+   For a flash job, the engine locks the bus (`gi_CanIf_Lock()`), configures it for the ECU,
+   turns the traffic log off and listens for bus-off. A touchscreen front-end can later call the
+   same API.
+
+ISO-TP is not tunnelled over BLE: the connection interval would slow every flow-control round
+trip, and a flash must not depend on the phone or PC staying connected.
 
 ## 10. Tests
 

@@ -28,6 +28,8 @@ Files session: connect, open the Files page, type `ls` (or **List**); select the
 
 Provisioning session: on the Provisioning page **Create CA** once (or **Load** a folder; the default `~/.blehost/ca` holds the CA private key, keep it private), connect, **Get Status**, **Provision**. Headless: `python setu_client.py provision --name "ProjectHanuman" [--ca DIR] [--out device.pem] [--negative]` (`--negative` wipes a device that is not fresh, sends the certificates it must reject and checks each answer, then provisions it) and `python setu_client.py deprovision --name "ProjectHanuman"` (wipe).
 
+UDS session (headless only for now): `python setu_client.py uds target --profile PROFILE.json`, `uds req 22F190`, `uds unlock --level 1 --algo BENCH_XOR`, `uds status`, `uds abort`, and `flash NAME --profile PROFILE.json`, which flashes the stored file `/FLASH_DISK:/FW/NAME` into the ECU with the profile's sequence (_DOC/UDS/README.md; the bench ECU is _TOOLS/EcuSim).
+
 Pairing session: provision both boards first (with the same CA). On the Pairing page **Scan**, choose the central and the peripheral, **Check**, **Pair**. Headless: `python setu_client.py pair --central ADDRESS --peripheral ADDRESS` (exit code 0 only when both end PAIRED; refused when the two are paired with each other already), `pairstatus --address ADDRESS` and `unpair --address ADDRESS`.
 
 The PC's own SETU service is published at start-up through WinRT's `GattServiceProvider` (Windows 10/11, adapter with the peripheral role; the Provisioning page's *PC service* pill says whether it is up). `bless` is not used: it cannot be installed next to bleak ≥ 1 on Python 3.12.
@@ -38,7 +40,7 @@ The PC's own SETU service is published at start-up through WinRT's `GattServiceP
 
 ```
 ble_host_gui.py          entry point; FEATURES lists the feature pages; starts the PC GATT service
-setu_client.py       SETU reference client (protocol + command line, incl. hex --store, fs, provision/deprovision, pair/pairstatus/unpair); imported by protocols/setu.py
+setu_client.py       SETU reference client (protocol + command line, incl. hex --store, fs, provision/deprovision, pair/pairstatus/unpair, uds, flash); imported by protocols/setu.py
 setu_receiver.py     SETU receiver role (protocol §7), transport independent
 blehost/
   context.py             AppContext: settings, event bus, asyncio runner, link, services
@@ -55,6 +57,7 @@ blehost/
     provisioning.py      provisioning appTypes, STATUS/RESULT codecs, ProvisioningSession (incl. deprovision)
     pairing.py           Pairing service UUIDs, CONTROL/STATUS codecs, PairingOrchestrator (probe, pair, unpair)
     filesystem.py        file commands: CMD/REPLY/ENTRY codecs, FileSystemSession, the UART harness's line parser, fs CLI and shell
+    uds.py               UDS over BLE (0x50-0x58): Target/FlashParams/Status codecs, the JSON profile loader, UdsSession, uds CLI
   pki/
     authority.py         the CA: create/load, check a CSR, issue a device certificate
     negative.py          certificates the device must reject (host test devicecert_verify, provision --negative)
