@@ -183,6 +183,18 @@ add_unit_test(fscmd_disabled
    SOURCES unit/FsCmd/test_fscmd.c ${SHIM_DIR}/fs_sim.c
    INCLUDES ${FSCMD_INCLUDES})
 
+# ---- _LIB/UdsClient ------------------------------------------------------------
+# The UDS client against a scripted transport, and its ISO-TP transport against
+# recording fakes of Zephyr's ISO-TP API
+set(UDS_LIB_DIR ${REPO_ROOT}/_LIB/UdsClient)
+set(UDS_CLIENT_INCLUDES ${UDS_LIB_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/unit/UdsClient)
+add_unit_test(uds_client
+   SOURCES unit/UdsClient/test_uds_client.c
+   INCLUDES ${UDS_CLIENT_INCLUDES})
+add_unit_test(uds_tp_isotp
+   SOURCES unit/UdsClient/test_uds_tp_isotp.c
+   INCLUDES ${UDS_CLIENT_INCLUDES})
+
 # ---- _ASW/_CAN -------------------------------------------------------------------
 # CAN / CAN FD interface against a scripted controller (Zephyr's CAN API): a CAN
 # FD build with the self-test and traffic log, and a CAN 2.0 build with neither
@@ -307,6 +319,8 @@ set(CHECKED_HEADERS
    ${FSMGR_DIR}/FileSysManager_Types.h ${FSMGR_DIR}/FileSysManager_Config.h
    ${ASW_DIR}/_FS_CMD/FsCmd.h
    ${ASW_DIR}/_CAN/CanIf.h
+   ${UDS_LIB_DIR}/UdsClient.h ${UDS_LIB_DIR}/UdsClient_Types.h ${UDS_LIB_DIR}/UdsClient_Config.h
+   ${UDS_LIB_DIR}/UdsTp_Isotp.h
    ${GATT_CB_DIR}/GATT_CB_Types.h ${GATT_CB_DIR}/GATT_GenericCallbacks.h
    ${ASW_DIR}/_SETU_SVC/SETUSvc.h ${ASW_DIR}/_SETU_SVC/SETURouter.h ${ASW_DIR}/_DATA_STORE/DataStore.h
    ${ASW_DIR}/_PROV/Prov.h ${ASW_DIR}/_PROV/ProvButton.h
@@ -317,7 +331,8 @@ set(CHECKED_HEADERS
    ${ASW_DIR}/_CSR/CSR_Generator_Config.h ${ASW_DIR}/_CSR/DER.h
    ${ASW_DIR}/_GENERIX/Helpers.h)
 set(HDR_INCLUDES "")
-foreach(DIR ${SHIM_DIR} ${SETU_INCLUDES} ${GATT_CB_DIR} ${FSCMD_INCLUDES} ${PROV_INCLUDES} ${ASW_DIR}/_GENERIX)
+foreach(DIR ${SHIM_DIR} ${SETU_INCLUDES} ${GATT_CB_DIR} ${FSCMD_INCLUDES} ${PROV_INCLUDES} ${ASW_DIR}/_GENERIX
+      ${UDS_LIB_DIR})
    list(APPEND HDR_INCLUDES -I${DIR})
 endforeach()
 add_test(NAME header_hygiene

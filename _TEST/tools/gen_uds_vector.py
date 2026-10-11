@@ -173,10 +173,10 @@ def uds_cmd_section() -> dict:
             short("target_fd_29bit", "TARGET",
                   target_payload(2, TARGET_FLAGS["EXT_ID"] | TARGET_FLAGS["FD"] | TARGET_FLAGS["BRS"]
                                  | TARGET_FLAGS["PAD"], 500000, 2000000, 0x18DA10F1, 0x18DAF110, 0,
-                                 0, 64, 0xAA, 100, 6000),
+                                 0, 64, 0xCC, 100, 6000),
                   seq=2, flags=TARGET_FLAGS["EXT_ID"] | TARGET_FLAGS["FD"] | TARGET_FLAGS["BRS"]
                   | TARGET_FLAGS["PAD"], bitrate=500000, data_bitrate=2000000, tx_id=0x18DA10F1,
-                  rx_id=0x18DAF110, func_id=0, ext_addr=0, dl=64, pad=0xAA, p2=100, p2star=6000),
+                  rx_id=0x18DAF110, func_id=0, ext_addr=0, dl=64, pad=0xCC, p2=100, p2star=6000),
             result("result_target_ok", 1, "TARGET", "OK"),
             result("result_target_busy", 2, "TARGET", "BUSY"),
             short("diag_req_vin", "DIAG_REQ", bytes([3, 0, 0x22, 0xF1, 0x90]), seq=3, flags=0,

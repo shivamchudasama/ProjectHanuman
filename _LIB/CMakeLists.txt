@@ -12,3 +12,5 @@ add_subdirectory(GATT_CB)
 add_subdirectory(SETU)
 # The FAT file system on the external flash (hex uploads are stored there)
 add_subdirectory(FileSysManager)
+# The UDS client (ISO 14229, tester side) on Zephyr's ISO-TP
+add_subdirectory(UdsClient)
