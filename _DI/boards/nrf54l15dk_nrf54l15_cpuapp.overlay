@@ -7,3 +7,84 @@
 	current-speed = <921600>;
 	hw-flow-control;
 };
+
+/*
+ * CAN / CAN FD: a MikroE MCP2518FD Click (MCP2518FD controller, ATA6563
+ * transceiver, 40 MHz oscillator) wired to SPIM21 on port 1. Zephyr's
+ * mikroe_mcp2518fd_click shield needs a mikroBUS header, which the DK lacks,
+ * so the node is described here. Wiring, supply (the DK's VDD must be 3.3 V)
+ * and limitations: _DOC/CAN/README.md.
+ *
+ *   Click   DK pin   Was
+ *   SCK     P1.11    free
+ *   SDI     P1.14    LED3      (an output: LED3 just flickers)
+ *   SDO     P1.09    Button 1
+ *   CS      P1.08    Button 2
+ *   INT     P1.12    free      (pulled up: inactive when no click is fitted)
+ *
+ * The driver enables INT as a level interrupt before it probes the chip, so
+ * INT must not sit on a pin that a board circuit can pull low.
+ *
+ * The bitrates are not set here: _ASW/_CAN sets them from Kconfig (CANIF_*)
+ * before it starts the controller.
+ */
+&pinctrl {
+	spi21_can_default: spi21_can_default {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK, 1, 11)>,
+				<NRF_PSEL(SPIM_MOSI, 1, 14)>,
+				<NRF_PSEL(SPIM_MISO, 1, 9)>;
+		};
+	};
+
+	spi21_can_sleep: spi21_can_sleep {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK, 1, 11)>,
+				<NRF_PSEL(SPIM_MOSI, 1, 14)>,
+				<NRF_PSEL(SPIM_MISO, 1, 9)>;
+			low-power-enable;
+		};
+	};
+};
+
+/* Button 1, Button 2 and LED3 now carry the click's signals. The DK library
+ * builds its tables from these nodes, so Button 0 (DK_BTN1, the provisioning
+ * wipe) and LED0 (DK_LED1, pairing) keep their indexes.
+ */
+/ {
+	aliases {
+		/delete-property/ sw1;
+		/delete-property/ sw2;
+		/delete-property/ led3;
+	};
+
+	chosen {
+		zephyr,canbus = &mcp2518fd;
+	};
+};
+
+/delete-node/ &button1;
+/delete-node/ &button2;
+/delete-node/ &led3;
+
+&spi21 {
+	status = "okay";
+	cs-gpios = <&gpio1 8 GPIO_ACTIVE_LOW>;
+	pinctrl-0 = <&spi21_can_default>;
+	pinctrl-1 = <&spi21_can_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	mcp2518fd: can@0 {
+		compatible = "microchip,mcp251xfd";
+		reg = <0>;
+		/* SPIM21's limit (16 MHz peripheral clock); the chip allows 18 MHz */
+		spi-max-frequency = <8000000>;
+		osc-freq = <40000000>;
+		int-gpios = <&gpio1 12 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		status = "okay";
+
+		can-transceiver {
+			max-bitrate = <5000000>;
+		};
+	};
+};
