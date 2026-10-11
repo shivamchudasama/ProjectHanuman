@@ -28,6 +28,11 @@ Usage:
     python setu_client.py pair --central AA:BB:CC:DD:EE:01 --peripheral AA:BB:CC:DD:EE:02
     python setu_client.py pairstatus --address AA:BB:CC:DD:EE:01
     python setu_client.py unpair --address AA:BB:CC:DD:EE:01
+    python setu_client.py uds target --profile ../EcuSim/profiles/sim.json
+    python setu_client.py uds req 22F190 [--functional]
+    python setu_client.py uds unlock --level 1 --algo BENCH_XOR
+    python setu_client.py uds status | uds abort
+    python setu_client.py flash APP1.BIN --profile ../EcuSim/profiles/sim.json
 
 hex is the upload the project firmware in _ASW accepts (_DOC/HexUpload/PROTOCOL.md);
 with --store NAME the device also stores it as the file /FLASH_DISK:/FW/NAME on its
@@ -48,6 +53,13 @@ pair orchestrates certificate-based OOB pairing of two provisioned devices
 (_DOC/Pairing/PROTOCOL.md): it connects to both, sends START to each and
 follows both until PAIRED or FAILED; the devices then keep their encrypted
 link. pairstatus reads one device's pairing STATUS; unpair deletes its bond.
+uds drives UDS (ISO 14229) on the device's CAN bus (_DOC/UDS/PROTOCOL.md): uds
+target sets the ECU from a JSON profile (--profile: CAN, addressing, timing, and
+the flash sequence; _TOOLS/EcuSim/profiles/sim.json), uds req HEX sends a raw
+request and prints the ECU's response, uds unlock runs SecurityAccess with an
+on-device key algorithm. flash NAME --profile P sets the target, then flashes the
+stored file /FLASH_DISK:/FW/NAME (store it first with hex --store NAME) with the
+profile's programming sequence, printing the progress; Ctrl+C aborts the job.
 ping and send need a server that echoes shorts and accepts any appType; the
 project firmware rejects every appType except 0x10.
 
@@ -541,16 +553,73 @@ async def fs_command(args):
             sys.exit(f"fs {sub}: {e}")
 
 
+async def uds_command(args):
+    """UDS on the device's CAN bus: uds target|req|unlock|status|abort, and flash."""
+    from bleak import BleakClient
+
+    from blehost.protocols import uds
+
+    if args.command == "uds":
+        sub = args.arg
+        if sub not in uds.CLI_COMMANDS:
+            sys.exit("uds: give a command (" + ", ".join(uds.CLI_COMMANDS) + ")")
+    elif args.arg is None or args.profile is None:
+        sys.exit("flash NAME --profile PROFILE")
+
+    target = await find_device(args.address, args.name)
+    async with BleakClient(target) as client:
+        setu_cli = SETUClient(client, args.base)
+        await client.start_notify(setu_cli.ctrl_uuid, setu_cli.on_notify)
+        session = uds.UdsSession(setu_cli, log=print)
+        try:
+            if args.command == "uds":
+                await uds.run_cli(session, sub, args.rest, profile=args.profile, functional=args.functional,
+                                  level=args.level, algo=args.algo)
+                return
+            await flash_file(session, uds, args.arg, args.profile)
+        except (uds.UdsError, ValueError, OSError, KeyError, TimeoutError) as e:
+            sys.exit(f"{args.command}: {e}")
+
+
+async def flash_file(session, uds, name: str, profile: str):
+    """Set the profile's target, flash /FLASH_DISK:/FW/NAME, print the progress."""
+    target, params = uds.load_profile(profile)
+    await session.target(target)
+    print(f"target tx 0x{target.tx_id:x} rx 0x{target.rx_id:x}; steps: {', '.join(params.steps())}")
+    shown = [None]
+
+    def progress(st):
+        line = st.describe()
+        if line != shown[0]:
+            print(line)
+            shown[0] = line
+
+    t0 = time.perf_counter()
+    try:
+        st = await session.flash(name, params, progress)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print("aborting ...")
+        await session.abort()
+        raise
+    dt = time.perf_counter() - t0
+    print(f"flashed {name}: {st.total} bytes in {dt:.1f} s ({st.total * 8 / dt / 1000:.0f} kbit/s)")
+
+
 async def main():
     from bleak import BleakClient
 
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=["ping", "send", "caps", "hex", "provision", "deprovision",
-                                        "pair", "pairstatus", "unpair", "fs"])
+                                        "pair", "pairstatus", "unpair", "fs", "uds", "flash"])
     ap.add_argument("arg", nargs="?", help="send: size in bytes (default 20000); hex: .hex file; "
                                            "fs: mkdir|cd|openr|openw|write|read|ls|delfile|deldir|"
-                                           "close|abort|get|put|shell")
-    ap.add_argument("rest", nargs="*", help="fs: the command's operands")
+                                           "close|abort|get|put|shell; uds: target|req|unlock|status|"
+                                           "abort; flash: the stored file's name")
+    ap.add_argument("rest", nargs="*", help="fs: the command's operands; uds req: the request (hex)")
+    ap.add_argument("--profile", help="uds target, flash: JSON profile (target and flash sequence)")
+    ap.add_argument("--functional", action="store_true", help="uds req: send to the functional ID")
+    ap.add_argument("--level", type=lambda s: int(s, 0), default=1, help="uds unlock: requestSeed level")
+    ap.add_argument("--algo", default="BENCH_XOR", help="uds unlock: key algorithm (name or number)")
     ap.add_argument("--store", metavar="NAME",
                     help="hex: also store the upload as the file /FLASH_DISK:/FW/NAME")
     ap.add_argument("--hex", dest="hex_data", metavar="HEX", help="fs write: data as hex")
@@ -599,6 +668,9 @@ async def main():
         return
     if args.command == "fs":
         await fs_command(args)
+        return
+    if args.command in ("uds", "flash"):
+        await uds_command(args)
         return
 
     target = await find_device(args.address, args.name)

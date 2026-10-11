@@ -1,0 +1,19 @@
+{
+  "_comment": "The ECU simulator with --fd --brs: CAN FD, 500 kbit/s / 2 Mbit/s, 64-byte ISO-TP frames; otherwise as sim.json.",
+  "can": { "bitrate": 500000, "fd": true, "data_bitrate": 2000000, "brs": true },
+  "addressing": { "tx_id": "0x7E0", "rx_id": "0x7E8", "functional_id": "0x7DF", "extended_ids": false, "dl": 64, "padding": true },
+  "timing": { "p2_ms": 0, "p2star_ms": 0 },
+  "flash": {
+    "extended_session": true,
+    "dtc_off": true,
+    "comm_control": { "control": "0x03", "type": "0x01" },
+    "security": { "level": 1, "algo": "BENCH_XOR" },
+    "fingerprint": { "did": "0xF15A", "data": "20261012010203" },
+    "erase": { "rid": "0xFF00", "per_record": true },
+    "check": { "rid": "0xFF01", "crc": true },
+    "reset": "0x01",
+    "alfid": "0x44",
+    "dfi": "0x00",
+    "max_block": 0
+  }
+}

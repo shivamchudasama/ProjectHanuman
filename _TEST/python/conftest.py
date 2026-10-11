@@ -357,3 +357,202 @@ class FakeSETU:
 @pytest.fixture
 def fsdev():
     return FakeFsDevice()
+
+
+# ---- UDS -----------------------------------------------------------------------------
+ECUSIM_DIR = os.path.join(REPO, "_TOOLS", "EcuSim")
+if ECUSIM_DIR not in sys.path:
+    sys.path.insert(0, ECUSIM_DIR)
+
+
+class FakeUdsDevice:
+    """UDS over BLE (_DOC/UDS/PROTOCOL.md) with the firmware's rules, in Python:
+    TARGET is stored, DIAG_REQ and UNLOCK go to an EcuSim (the ECU on the bus;
+    _TOOLS/EcuSim) with the device's own BENCH_XOR key, and FLASH runs the
+    parameterised programming sequence against it on a stored file, reporting
+    STATUS at each step. handle() returns the notifications as (appType,
+    payload). Knobs: target_status, silent (no DIAG answer: TIMEOUT)."""
+
+    PART = 236
+
+    def __init__(self, ecu=None):
+        from ecu_sim import EcuSim
+        self.ecu = ecu or EcuSim()
+        self.files = {}                       # name -> the stored file (records)
+        self.target = None
+        self.target_status = 0
+        self.silent = False
+        self.status = bytes(15)               # STATUS payload of the last job
+        self.received = []                    # (appType, payload)
+
+    # ---- UDS on the bus --------------------------------------------------------------
+    def _uds(self, req: bytes):
+        """The ECU's final response, or None."""
+        rsps = [r for _, r in self.ecu.handle(bytes(req))]
+        rsps = [r for r in rsps if not (len(r) == 3 and r[0] == 0x7F and r[2] == 0x78)]
+        return rsps[-1] if rsps else None
+
+    def _diag_rsp(self, seq, req, functional=False):
+        if self.target is None:
+            return [(0x53, struct.pack("<BBHH", seq, 4, 0, 0))]
+        from ecu_sim import SUB_FUNCTION_SIDS
+        rsp = None if self.silent else self._uds(req)
+        if rsp is None:
+            suppressed = req[0] in SUB_FUNCTION_SIDS and len(req) >= 2 and bool(req[1] & 0x80)
+            st = 0 if (functional or suppressed) and not self.silent else 6
+            return [(0x53, struct.pack("<BBHH", seq, st, 0, 0))]
+        st = 5 if rsp[0] == 0x7F else 0
+        return [(0x53, struct.pack("<BBHH", seq, st, len(rsp), off) + rsp[off:off + self.PART])
+                for off in range(0, len(rsp), self.PART)]
+
+    def _unlock(self, level, algo):
+        from ecu_sim import bench_xor
+        if algo != 0x01:
+            return 11, b""
+        seed = self._uds(bytes([0x27, level]))
+        if seed is None or seed[0] == 0x7F:
+            return (5, seed[2:3]) if seed else (6, b"")
+        if not any(seed[2:]):
+            return 0, b""
+        rsp = self._uds(bytes([0x27, level + 1]) + bench_xor(level, seed[2:]))
+        return (5, rsp[2:3]) if rsp is None or rsp[0] == 0x7F else (0, b"")
+
+    def _flash(self, params, name):
+        """The device's flash job; returns the STATUS payloads."""
+        from blehost.protocols import uds
+        out = []
+        state = {"step": 0, "rec": 0, "cnt": 0, "done": 0, "total": 0, "sid": 0, "nrc": 0}
+
+        def status(st, result=0):
+            p = struct.pack("<BBBBIIBBB", st, state["step"], state["rec"], state["cnt"], state["done"],
+                            state["total"], state["sid"], state["nrc"], result)
+            out.append((0x56, p))
+            self.status = p
+
+        def step(n, req):
+            state["step"], state["sid"] = n, req[0]
+            status(1)
+            rsp = self._uds(req)
+            if rsp is None:
+                status(3, 6)
+                return False
+            if rsp[0] == 0x7F:
+                state["nrc"] = rsp[2]
+                status(3, 5)
+                return False
+            return rsp
+
+        data = self.files.get(name)
+        if data is None:
+            status(3, 9)
+            return out
+        recs, i = [], 0
+        while i < len(data):
+            addr, n = struct.unpack("<II", data[i:i + 8])
+            recs.append((addr, data[i + 8:i + 8 + n]))
+            i += 8 + n
+        state["cnt"], state["total"] = len(recs), sum(len(d) for _, d in recs)
+        f, ff = params.flags, uds.FF
+        al = params.alfid
+        crc = 0
+        for _, d in recs:
+            crc = zlib.crc32(d, crc)
+        seq = []
+        if f & ff["EXT_SESSION"]:
+            seq.append((1, b"\x10\x03"))
+        if f & ff["DTC_OFF"]:
+            seq.append((2, b"\x85\x02"))
+        if f & ff["COMM_OFF"]:
+            seq.append((3, bytes([0x28, params.comm_control, params.comm_type])))
+        seq.append((4, b"\x10\x02"))
+        for n, req in seq:
+            if step(n, req) is False:
+                return out
+        if f & ff["SECURITY"]:
+            state["step"], state["sid"] = 5, 0x27
+            st, nrc = self._unlock(params.security_level, params.key_algo)
+            if st:
+                state["nrc"] = nrc[0] if nrc else 0
+                status(3, st)
+                return out
+        if f & ff["FINGERPRINT"]:
+            if step(6, b"\x2e" + struct.pack(">H", params.fingerprint_did) + params.fingerprint) is False:
+                return out
+        if f & ff["ERASE"] and not f & ff["ERASE_PER_RECORD"]:
+            if step(7, b"\x31\x01" + struct.pack(">H", params.erase_rid)) is False:
+                return out
+        for idx, (addr, d) in enumerate(recs):
+            state["rec"] = idx
+            al_bytes = (addr.to_bytes(al & 0xF, "big") + len(d).to_bytes(al >> 4, "big"))
+            if f & ff["ERASE_PER_RECORD"]:
+                if step(7, b"\x31\x01" + struct.pack(">H", params.erase_rid) + bytes([al]) + al_bytes) is False:
+                    return out
+            rsp = step(8, bytes([0x34, params.dfi, al]) + al_bytes)
+            if rsp is False:
+                return out
+            block = int.from_bytes(rsp[2:2 + (rsp[1] >> 4)], "big") - 2
+            bsc = 1
+            for off in range(0, len(d), block):
+                if step(9, bytes([0x36, bsc]) + d[off:off + block]) is False:
+                    return out
+                state["done"] += len(d[off:off + block])
+                bsc = (bsc + 1) & 0xFF
+            if step(10, b"\x37") is False:
+                return out
+        state["rec"] = len(recs)
+        if f & ff["CHECK"]:
+            args = struct.pack(">I", crc & 0xFFFFFFFF) if f & ff["CHECK_CRC"] else b""
+            if step(11, b"\x31\x01" + struct.pack(">H", params.check_rid) + args) is False:
+                return out
+        if f & ff["RESET"]:
+            if step(12, bytes([0x11, params.reset_type])) is False:
+                return out
+        state["step"] = 13
+        status(2)
+        return out
+
+    def handle(self, app_type: int, p: bytes) -> list:
+        from blehost.protocols import uds
+        self.received.append((app_type, bytes(p)))
+        seq = p[0]
+        if app_type == 0x50:
+            _, self.target = uds.Target.decode(bytes(p))
+            return [(0x51, bytes([seq, 0x50, self.target_status]))]
+        if app_type == 0x52:
+            return self._diag_rsp(seq, bytes(p[2:]), bool(p[1] & 1))
+        if app_type == 0x54:
+            if self.target is None:
+                return [(0x51, bytes([seq, 0x54, 4]))]
+            st, data = self._unlock(p[1], p[2])
+            return [(0x51, bytes([seq, 0x54, st]) + data)]
+        if app_type == 0x55:
+            if self.target is None:
+                return [(0x51, bytes([seq, 0x55, 4]))]
+            params = uds.FlashParams.decode(bytes(p[1:35]))
+            name = bytes(p[36:36 + p[35]]).decode()
+            return [(0x51, bytes([seq, 0x55, 0]))] + self._flash(params, name)
+        if app_type == 0x57:
+            return [(0x51, bytes([seq, 0x57, 3]))]
+        if app_type == 0x58:
+            return [(0x56, self.status)]
+        return []
+
+
+class FakeUdsSETU:
+    """What UdsSession needs from a SETUClient, wired to a FakeUdsDevice."""
+
+    def __init__(self, device: FakeUdsDevice):
+        self.device = device
+        self.short_q = asyncio.Queue()
+        self.sent = []
+
+    async def send_short(self, app_type: int, payload: bytes):
+        self.sent.append((app_type, bytes(payload)))
+        for t, p in self.device.handle(app_type, bytes(payload)):
+            self.short_q.put_nowait((t, p))
+        await asyncio.sleep(0)
+
+
+@pytest.fixture
+def udsdev():
+    return FakeUdsDevice()
