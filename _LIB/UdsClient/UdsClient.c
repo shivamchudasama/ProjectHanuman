@@ -590,6 +590,22 @@ int32_t gi32_UdsClient_KeepAlive(UdsClient_T *stpt_client)
 }
 
 /**
+ * @public        gv_UdsClient_EndSession
+ * @brief         Stop keeping the session alive without a request (e.g. after a
+ *                failed job): the ECU falls back to its default session once S3
+ *                runs out.
+ * @param[in,out] stpt_client Client.
+ * @return        None.
+ */
+void gv_UdsClient_EndSession(UdsClient_T *stpt_client)
+{
+   if (stpt_client != NULL)
+   {
+      stpt_client->b_session = false;
+   }
+}
+
+/**
  * @public        gi_UdsClient_Session
  * @brief         DiagnosticSessionControl (0x10). Takes the ECU's P2/P2* from the
  *                response (unless the target overrides them) and starts or stops

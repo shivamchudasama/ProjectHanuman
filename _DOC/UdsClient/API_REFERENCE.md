@@ -111,6 +111,11 @@ In a non-default session, it sends TesterPresent `3E 80` once nothing has been s
 the next call is due, or `UDS_KEEPALIVE_NONE` (-1) without a session to keep. Call it from
 the owner's thread.
 
+#### `void gv_UdsClient_EndSession(UdsClient_T *client)`
+Stops the keep-alive without sending anything. The ECU returns to its default session once
+S3 runs out (5 s). Use it after a failed job rather than keeping a half-programmed ECU in its
+programming session.
+
 ## 5. Service helpers
 
 All return as in §1. Requests and responses go through the client's own 64-byte buffers

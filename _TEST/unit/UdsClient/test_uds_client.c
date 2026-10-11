@@ -322,6 +322,12 @@ static void test_SessionTakesTheEcuTimingAndKeepsAlive(void)
    TEST_ASSERT_EQUAL_INT(0, gi_UdsClient_EcuReset(&sst_client, 0x01U));
    TEST_ASSERT_EQUAL_INT32(UDS_KEEPALIVE_NONE, gi32_UdsClient_KeepAlive(&sst_client));
 
+   // Ending the session without a request stops the keep-alive too
+   SIM_RSP("5003");
+   TEST_ASSERT_EQUAL_INT(0, gi_UdsClient_Session(&sst_client, 0x03U));
+   gv_UdsClient_EndSession(&sst_client);
+   TEST_ASSERT_EQUAL_INT32(UDS_KEEPALIVE_NONE, gi32_UdsClient_KeepAlive(&sst_client));
+
    // A target with its own timing keeps it
    st_target.u16_p2Ms = 200U;
    st_target.u16_p2StarMs = 7000U;

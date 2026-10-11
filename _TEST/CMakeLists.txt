@@ -195,6 +195,22 @@ add_unit_test(uds_tp_isotp
    SOURCES unit/UdsClient/test_uds_tp_isotp.c
    INCLUDES ${UDS_CLIENT_INCLUDES})
 
+# ---- _ASW/_UDS ----------------------------------------------------------------
+# Seed -> key (without and with an OEM hook), and the job engine with the real
+# UDS client, seed -> key and File System Manager (on fs_sim.c), a scripted
+# transport and a C ECU, CanIf stubbed
+set(UDS_INCLUDES ${ASW_DIR}/_UDS ${ASW_DIR}/_CAN ${ASW_DIR}/_DATA_STORE ${FSMGR_DIR} ${UDS_CLIENT_INCLUDES})
+add_unit_test(uds_key
+   SOURCES unit/Uds/test_uds_key.c
+   INCLUDES ${UDS_INCLUDES})
+add_unit_test(uds_key_oem
+   SOURCES unit/Uds/test_uds_key.c
+   INCLUDES ${UDS_INCLUDES}
+   DEFINES UDS_KEY_OEM=1)
+add_unit_test(uds_job
+   SOURCES unit/Uds/test_uds_job.c ${SHIM_DIR}/fs_sim.c
+   INCLUDES ${UDS_INCLUDES})
+
 # ---- _ASW/_CAN -------------------------------------------------------------------
 # CAN / CAN FD interface against a scripted controller (Zephyr's CAN API): a CAN
 # FD build with the self-test and traffic log, and a CAN 2.0 build with neither
@@ -321,6 +337,7 @@ set(CHECKED_HEADERS
    ${ASW_DIR}/_CAN/CanIf.h
    ${UDS_LIB_DIR}/UdsClient.h ${UDS_LIB_DIR}/UdsClient_Types.h ${UDS_LIB_DIR}/UdsClient_Config.h
    ${UDS_LIB_DIR}/UdsTp_Isotp.h
+   ${ASW_DIR}/_UDS/UdsKey.h ${ASW_DIR}/_UDS/UdsJob.h
    ${GATT_CB_DIR}/GATT_CB_Types.h ${GATT_CB_DIR}/GATT_GenericCallbacks.h
    ${ASW_DIR}/_SETU_SVC/SETUSvc.h ${ASW_DIR}/_SETU_SVC/SETURouter.h ${ASW_DIR}/_DATA_STORE/DataStore.h
    ${ASW_DIR}/_PROV/Prov.h ${ASW_DIR}/_PROV/ProvButton.h
@@ -332,7 +349,7 @@ set(CHECKED_HEADERS
    ${ASW_DIR}/_GENERIX/Helpers.h)
 set(HDR_INCLUDES "")
 foreach(DIR ${SHIM_DIR} ${SETU_INCLUDES} ${GATT_CB_DIR} ${FSCMD_INCLUDES} ${PROV_INCLUDES} ${ASW_DIR}/_GENERIX
-      ${UDS_LIB_DIR})
+      ${UDS_LIB_DIR} ${ASW_DIR}/_CAN)
    list(APPEND HDR_INCLUDES -I${DIR})
 endforeach()
 add_test(NAME header_hygiene

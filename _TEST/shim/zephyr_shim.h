@@ -419,6 +419,17 @@ static inline void sys_put_le16(uint16_t val, uint8_t *dst)
    dst[0] = (uint8_t)val;
    dst[1] = (uint8_t)(val >> 8);
 }
+static inline uint32_t sys_get_be32(const uint8_t *src)
+{
+   return ((uint32_t)src[0] << 24) | ((uint32_t)src[1] << 16) | ((uint32_t)src[2] << 8) | (uint32_t)src[3];
+}
+static inline void sys_put_be32(uint32_t val, uint8_t *dst)
+{
+   dst[0] = (uint8_t)(val >> 24);
+   dst[1] = (uint8_t)(val >> 16);
+   dst[2] = (uint8_t)(val >> 8);
+   dst[3] = (uint8_t)val;
+}
 
 /* ---- Base64 (zephyr/sys/base64.h), RFC 4648 with padding ----------------- */
 static inline int base64_encode(uint8_t *dst, size_t dlen, size_t *olen,

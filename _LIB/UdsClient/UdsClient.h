@@ -99,6 +99,7 @@ extern void gv_UdsClient_Close(UdsClient_T *stpt_client);
 extern int gi_UdsClient_Request(UdsClient_T *stpt_client, const uint8_t *u8pt_req, size_t t_reqLen,
    bool b_functional, uint8_t *u8pt_rsp, size_t t_rspMax, size_t *tpt_rspLen);
 extern int32_t gi32_UdsClient_KeepAlive(UdsClient_T *stpt_client);
+extern void gv_UdsClient_EndSession(UdsClient_T *stpt_client);
 extern int gi_UdsClient_Session(UdsClient_T *stpt_client, uint8_t u8_session);
 extern int gi_UdsClient_EcuReset(UdsClient_T *stpt_client, uint8_t u8_type);
 extern int gi_UdsClient_CommControl(UdsClient_T *stpt_client, uint8_t u8_control, uint8_t u8_type);
