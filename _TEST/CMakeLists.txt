@@ -182,6 +182,11 @@ add_unit_test(fscmd
 add_unit_test(fscmd_disabled
    SOURCES unit/FsCmd/test_fscmd.c ${SHIM_DIR}/fs_sim.c
    INCLUDES ${FSCMD_INCLUDES})
+# ... and next to a UDS flash job, which holds the file system too
+add_unit_test(fscmd_uds
+   SOURCES unit/FsCmd/test_fscmd.c ${SHIM_DIR}/fs_sim.c
+   INCLUDES ${FSCMD_INCLUDES} ${ASW_DIR}/_UDS ${ASW_DIR}/_CAN ${REPO_ROOT}/_LIB/UdsClient
+   DEFINES CONFIG_FS_CMD=1 CONFIG_UDS=1)
 
 # ---- _LIB/UdsClient ------------------------------------------------------------
 # The UDS client against a scripted transport, and its ISO-TP transport against
@@ -210,6 +215,15 @@ add_unit_test(uds_key_oem
 add_unit_test(uds_job
    SOURCES unit/Uds/test_uds_job.c ${SHIM_DIR}/fs_sim.c
    INCLUDES ${UDS_INCLUDES})
+# UDS over BLE on the real router, UdsJob and the SETU Server stubbed
+set(UDS_CMD_INCLUDES ${UDS_INCLUDES} ${ASW_DIR}/_SETU_SVC ${SETU_INCLUDES})
+add_unit_test(uds_cmd
+   SOURCES unit/Uds/test_uds_cmd.c
+   INCLUDES ${UDS_CMD_INCLUDES}
+   DEFINES CONFIG_UDS_CMD=1)
+add_unit_test(uds_cmd_disabled
+   SOURCES unit/Uds/test_uds_cmd.c
+   INCLUDES ${UDS_CMD_INCLUDES})
 
 # ---- _ASW/_CAN -------------------------------------------------------------------
 # CAN / CAN FD interface against a scripted controller (Zephyr's CAN API): a CAN
@@ -337,7 +351,7 @@ set(CHECKED_HEADERS
    ${ASW_DIR}/_CAN/CanIf.h
    ${UDS_LIB_DIR}/UdsClient.h ${UDS_LIB_DIR}/UdsClient_Types.h ${UDS_LIB_DIR}/UdsClient_Config.h
    ${UDS_LIB_DIR}/UdsTp_Isotp.h
-   ${ASW_DIR}/_UDS/UdsKey.h ${ASW_DIR}/_UDS/UdsJob.h
+   ${ASW_DIR}/_UDS/UdsKey.h ${ASW_DIR}/_UDS/UdsJob.h ${ASW_DIR}/_UDS/UdsCmd.h
    ${GATT_CB_DIR}/GATT_CB_Types.h ${GATT_CB_DIR}/GATT_GenericCallbacks.h
    ${ASW_DIR}/_SETU_SVC/SETUSvc.h ${ASW_DIR}/_SETU_SVC/SETURouter.h ${ASW_DIR}/_DATA_STORE/DataStore.h
    ${ASW_DIR}/_PROV/Prov.h ${ASW_DIR}/_PROV/ProvButton.h

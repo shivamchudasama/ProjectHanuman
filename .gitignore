@@ -10,3 +10,6 @@ __pycache__/
 
 # Local certificate authority (holds the CA private key)
 _CA/
+
+# Private OEM seed -> key algorithms (_ASW/_UDS/oem, _DOC/UDS/README.md)
+_ASW/_UDS/oem/

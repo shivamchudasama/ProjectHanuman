@@ -243,7 +243,7 @@ extern uint8_t gu8_UdsJob_Flash(const char *cpt_name, size_t t_nameLen, const Ud
    UdsJobStatus_F fpt_status, void *vpt_user);
 extern uint8_t gu8_UdsJob_Abort(void);
 extern void gv_UdsJob_GetStatus(UdsJobStatus_T *stpt_status);
-extern bool gb_UdsJob_FileOpen(void);
+extern bool gb_UdsJob_FlashRunning(void);
 
 #endif //!_UDS_JOB_H
 

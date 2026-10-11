@@ -21,6 +21,10 @@
 #include "ProvButton.h"
 #include "Pair.h"
 #include "SETURouter.h"
+#if defined(CONFIG_UDS)
+#include "UdsJob.h"
+#include "UdsCmd.h"
+#endif // CONFIG_UDS
 
 /******************************************************************************/
 /*                                                                            */
@@ -48,8 +52,9 @@
 /**
  * @public        main
  * @brief         Starts the File System Manager, initializes the SETU users (hex
- *                upload, file commands, provisioning, pairing), the CAN interface,
- *                the SETU Server and Client, the BLE stack and starts advertising.
+ *                upload, file commands, provisioning, pairing, UDS), the CAN
+ *                interface, the SETU Server and Client, the BLE stack and starts
+ *                advertising.
  * @return        0 upon successful execution.
  */
 int main(void)
@@ -77,6 +82,13 @@ int main(void)
    // log. Without the click it logs an error and the rest runs on.
    (void)gi_CanIf_Init();
 #endif // CONFIG_CANIF
+
+#if defined(CONFIG_UDS)
+   // UDS over the CAN bus: the job engine follows the bus state; its BLE
+   // messages (appTypes 0x50-0x5F) register with the router
+   (void)gi_UdsJob_Init();
+   (void)gi_UdsCmd_Init();
+#endif // CONFIG_UDS
 
    // Start the SETU Server and Client before advertising, so they are ready
    // for the first connection. They need no Bluetooth stack yet.

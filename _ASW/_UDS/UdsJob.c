@@ -1359,14 +1359,16 @@ void gv_UdsJob_GetStatus(UdsJobStatus_T *stpt_status)
 }
 
 /**
- * @public        gb_UdsJob_FileOpen
- * @brief         Whether a flash job holds the File System Manager's open file
- *                (the file commands and the hex upload's BEGIN answer BUSY then).
- * @return        true while it does.
+ * @public        gb_UdsJob_FlashRunning
+ * @brief         Whether a flash job runs, from its acceptance to its end. It opens
+ *                its file twice (check, then download), so the file commands and the
+ *                hex upload's BEGIN answer BUSY for the whole job, not only while
+ *                the file is open.
+ * @return        true while a flash job runs or holds the file.
  */
-bool gb_UdsJob_FileOpen(void)
+bool gb_UdsJob_FlashRunning(void)
 {
-   return atomic_get(&st_fileOpen) != 0;
+   return (atomic_get(&st_fileOpen) != 0) || (sst_status.u8_state == (uint8_t)eUDS_STATE_RUNNING);
 }
 
 /**

@@ -441,7 +441,7 @@ static void sv_AssertCleanedUp(void)
    TEST_ASSERT_NULL_MESSAGE(sst_canIf.vpt_lock, "bus unlocked");
    TEST_ASSERT_EQUAL_UINT32(sst_canIf.u32_locks, sst_canIf.u32_unlocks);
    TEST_ASSERT_TRUE_MESSAGE(sst_canIf.b_monitor, "traffic log back on");
-   TEST_ASSERT_FALSE(gb_UdsJob_FileOpen());
+   TEST_ASSERT_FALSE(gb_UdsJob_FlashRunning());
    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0U, gu32_SimFsOpenHandles(), "file closed");
    TEST_ASSERT_EQUAL_INT(0, atomic_get(&st_busy));
    TEST_ASSERT_EQUAL_INT(0, atomic_get(&st_abort));
@@ -702,13 +702,17 @@ static void test_FileInUseIsBusy(void)
    TEST_ASSERT_EQUAL_INT(0, gi_FSMGR_Call(&st_msg));
 }
 
-static void test_FileIsHeldOnlyWhileTheJobReadsIt(void)
+static void test_FlashRunningCoversTheWholeJob(void)
 {
+   UdsFlashParams_T st_params = sst_SimParams();
+
    sv_SetTargetOk();
    sst_tp.fpt_responder = sv_EcuVector;
-   TEST_ASSERT_FALSE(gb_UdsJob_FileOpen());
-   sv_FlashApp1(sst_SimParams());
-   TEST_ASSERT_FALSE(gb_UdsJob_FileOpen());
+   TEST_ASSERT_FALSE(gb_UdsJob_FlashRunning());
+   TEST_ASSERT_EQUAL_UINT8(eUDS_OK, gu8_UdsJob_Flash("APP1.BIN", 8U, &st_params, sv_OnStatus, USER));
+   TEST_ASSERT_TRUE_MESSAGE(gb_UdsJob_FlashRunning(), "from its acceptance");
+   sv_JobStep();
+   TEST_ASSERT_FALSE(gb_UdsJob_FlashRunning());
    TEST_ASSERT_TRUE_MESSAGE(gu32_SimFsCalls(eSFS_OPEN) >= 2U, "read twice: checked, then sent");
 }
 
@@ -972,7 +976,7 @@ int main(void)
    RUN_TEST(test_MaxBlockParameterCapsTheBlocks);
    RUN_TEST(test_BadFilesNeverReachTheEcu);
    RUN_TEST(test_FileInUseIsBusy);
-   RUN_TEST(test_FileIsHeldOnlyWhileTheJobReadsIt);
+   RUN_TEST(test_FlashRunningCoversTheWholeJob);
    RUN_TEST(test_FlashRefusals);
    RUN_TEST(test_BusLockedElsewhereIsBusy);
    RUN_TEST(test_TargetConfiguresTheBusThenTheClient);
