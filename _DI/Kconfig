@@ -112,6 +112,107 @@ config PAIR_CONNECT_TIMEOUT_MS
 
 endmenu
 
+menu "CAN bus"
+
+config CANIF
+	bool "CAN / CAN FD interface (_ASW/_CAN)"
+	default y
+	depends on CAN
+	help
+	  Owns the controller chosen as zephyr,canbus (the MCP2518FD Click):
+	  sets its mode and bitrates, starts it, follows its state, and gives
+	  other modules frame TX and filtered RX. The values below are the
+	  boot configuration; gi_CanIf_Configure() changes it at runtime.
+
+if CANIF
+
+config CANIF_FD
+	bool "Start in CAN FD mode"
+	default y
+	depends on CAN_FD_MODE
+	help
+	  Start the controller in CAN FD mode (classic and FD frames). When
+	  disabled it starts as a classic CAN 2.0 controller.
+
+config CANIF_BITRATE
+	int "Nominal (arbitration) bitrate (bit/s)"
+	default 500000
+	range 10000 1000000
+
+config CANIF_BITRATE_DATA
+	int "CAN FD data-phase bitrate (bit/s)"
+	default 2000000
+	range 1000000 8000000
+	depends on CAN_FD_MODE
+	help
+	  Used for frames sent with bit-rate switching (BRS).
+
+config CANIF_LISTEN_ONLY
+	bool "Start in listen-only mode"
+	help
+	  The controller neither acknowledges nor sends frames, so a vehicle
+	  bus can be watched without disturbing it. Sending is refused.
+
+config CANIF_SELFTEST
+	bool "Loopback self-test at boot"
+	help
+	  Before the boot configuration is applied, send a classic and (with
+	  CAN FD) a 64-byte FD frame in the controller's loopback mode and
+	  check they come back. The MCP2518FD's loopback mode is external
+	  loopback: the two frames (ID 0x5A5) also go out on the bus. Use it
+	  on the bench only, never connected to a vehicle.
+
+config CANIF_LOG_RX
+	bool "Log received frames at boot"
+	default y
+	help
+	  Log every received frame (standard and extended IDs) on the UART, at
+	  most CANIF_LOG_RX_MAX_PER_SEC a second. gv_CanIf_SetMonitor() turns
+	  it on and off at runtime; turn it off while flashing, it costs SPI
+	  and CPU time.
+
+config CANIF_LOG_RX_MAX_PER_SEC
+	int "Most frames logged per second"
+	default 20
+	range 1 1000
+
+config CANIF_TEST_TX_PERIOD_MS
+	int "Test frame period (ms, 0 = off)"
+	default 0
+	range 0 60000
+	help
+	  Send a test frame (ID 0x5A5, a counter; alternately classic and FD
+	  with BRS in CAN FD mode) at this period, to check the bus on the
+	  bench. Never enable it on a vehicle.
+
+config CANIF_MAX_FILTERS
+	int "Receive filters for other modules"
+	default 8
+	range 1 16
+	help
+	  Each takes one of the driver's filters
+	  (CAN_MCP251XFD_MAX_FILTERS). The traffic log takes two more; leave
+	  the rest for ISO-TP.
+
+config CANIF_RX_QUEUE_DEPTH
+	int "Receive queue depth (frames and state changes)"
+	default 16
+	range 4 64
+
+config CANIF_STACK_SIZE
+	int "CAN interface thread stack size"
+	default 2048
+
+config CANIF_PRIORITY
+	int "CAN interface thread priority"
+	default 6
+	help
+	  Below the SETU engine (5), above the File System Manager (10).
+
+endif # CANIF
+
+endmenu
+
 menu "Device certificate subject (CSR)"
 
 config CSR_SUBJ_C

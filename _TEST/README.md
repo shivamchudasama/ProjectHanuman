@@ -26,7 +26,7 @@ The output goes to `build_test/report/`:
 
 | Tier | Local | CI job | What it tests |
 |---|---|---|---|
-| C unit tests (CTest + [Unity](https://github.com/ThrowTheSwitch/Unity)) | yes | `host-tests`, with ASan + UBSan | `_LIB/SETU`, `_LIB/GATT_CB`, `_LIB/FileSysManager` (with and without the write buffer, on an in-memory volume), `_ASW/_DATA_STORE` (including uploads stored as files), `_ASW/_FS_CMD` (file commands, with and without `CONFIG_FS_CMD`), `_ASW/_SETU_SVC` (router), `_ASW/_PROV` (flow and wipe button), `_ASW/_PAIR` (pairing flow, the bond record and the bonded reconnection with its LED, end to end, and the signed OOB data on the real TF-PSA-Crypto), `_ASW/_DEVICE_CERT` (storage, and X.509 verification on the real Mbed TLS), `_ASW/_CSR` (key and CSR life cycle, DER encoder), `_ASW/_GENERIX`, header hygiene |
+| C unit tests (CTest + [Unity](https://github.com/ThrowTheSwitch/Unity)) | yes | `host-tests`, with ASan + UBSan | `_LIB/SETU`, `_LIB/GATT_CB`, `_LIB/FileSysManager` (with and without the write buffer, on an in-memory volume), `_ASW/_DATA_STORE` (including uploads stored as files), `_ASW/_FS_CMD` (file commands, with and without `CONFIG_FS_CMD`), `_ASW/_SETU_SVC` (router), `_ASW/_PROV` (flow and wipe button), `_ASW/_PAIR` (pairing flow, the bond record and the bonded reconnection with its LED, end to end, and the signed OOB data on the real TF-PSA-Crypto), `_ASW/_DEVICE_CERT` (storage, and X.509 verification on the real Mbed TLS), `_ASW/_CSR` (key and CSR life cycle, DER encoder), `_ASW/_CAN` (the CAN interface against a scripted controller, as a CAN FD and a CAN 2.0 build), `_ASW/_GENERIX`, header hygiene |
 | Python tests (pytest) | yes | `python-tests`, under `xvfb-run` | `setu_client.py` (protocol and command line), `setu_receiver.py`, `blehost/protocols`, `blehost/pki`, `blehost/core/gatt_server.py` (fake backend, and the WinRT backend against fake `winrt` modules), `blehost/core/decoders.py`, `blehost/core/ble_link.py` (the main link and a feature's own labelled links, fake `bleak`), `blehost/protocols/pairing.py` (codecs against `wire.json`, the orchestrator against simulated devices: success, refusals (including two devices paired with each other already), failures, time limit, cancellation, stale statuses, lost notifications), `blehost/protocols/filesystem.py` (the file commands' codecs against `wire.json`, the session, the UART harness's line parser, the `fs` command line and shell, against a scripted device), `blehost/features/provisioning.py`, `blehost/features/pairing.py` and `blehost/features/file_system.py` (each page's logic, and building the real Tk page), the Hex Upload page's Store as (BEGIN / COMMIT, size and CRC check), `blehost/ui` (the flat light/dark theme and its drawn check box and switch, one-pass switching, the display widgets and that they do not redraw unchanged state, the More menu, the hex upload's coalesced progress and segment count, the status mappings the pages colour by, the main window: pages built on first show, one mapped at a time, the status line, rail badges, traffic capture, and the window without Pillow or an icon font), `blehost/ui/icons.py` (the Pillow-drawn shapes and indicators, icon glyphs with and without a badge, the window icon, and their fallbacks without Pillow or an icon font), `_TOOLS/MemReport/mem_report.py` (map parsing on a synthetic map with each shape of `zephyr.map`, attribution to modules, load addresses, merged-string pools, gaps, name clashes, the table and the command line) |
 | Firmware build | no (VS Code) | `firmware-build`, in `ghcr.io/nrfconnect/sdk-nrf-toolchain`, once per flash interface (`FLASH_IF=spi`, `sqspi`) | The whole app for `nrf54l15dk/nrf54l15/cpuapp`. The ROM/RAM use, and the same per module (`mem_report.txt`), go in the job summary. The SPI image is the `firmware` artifact the hardware jobs flash |
 | Hardware in the loop | no | `hil-tests` (placeholder, manual) | Flash, upload `AA00000100.hex` over BLE, upload it again stored as a file (`hex --store`), `fs ls`, read it back with `fs get` before and after a reset and compare it with the hex file's records, provision the board with `--negative` (the device's certificate verification), check the certificate with `openssl verify`, check that a second provisioning is refused, `deprovision` and provision again |
@@ -37,10 +37,11 @@ The BLE glue (`_BLE`, `_GAP`, `SETUSvc.c`, `PairSvc.c`, `main.c`) only calls the
 - `DeviceCert_Verify.c` runs on the **real** Mbed TLS 4 / TF-PSA-Crypto (the major version NCS v3.4.1 ships), built for the host by `CMakeLists.txt`, against certificates made by the PC tool's own CA and negative set (see *Ideas* below). Nothing cryptographic is stubbed there.
 - `CSR_Generator.c`, `DeviceCert.c` and `Prov.c` use the PSA stub (`shim/psa_stub`) and an in-memory ITS, so every PSA result can be scripted.
 - `ProvButton.c` uses the DK-library shim and simulated time.
+- `CanIf.c` runs against a scripted controller behind Zephyr's CAN API (`shim/zephyr/drivers/can.h`, declarations only). The controller records mode, bitrates and start/stop, echoes frames in loopback mode, matches frames against the installed filters as the driver does, reports state changes and returns scripted errors. Its own thread runs through `gv_SimRunThread()`.
 - `Pair.c` records every BT stack call it makes (advertising, scanning, connections, SMP, OOB, bonds, GATT) through declarations-only shim APIs; `PairOob.c` runs on the real TF-PSA-Crypto.
 - `FileSysManager` runs on Zephyr's file system API as `shim/fs_sim.c` provides it: an in-memory volume that behaves as Zephyr's FAT backend where the manager can tell, with one-shot error injection on every call and a free-space limit. File and directory handles come from a fixed pool that each reset clears, so a test may end with a file still open without LeakSanitizer reporting it. `DataStore.c`, `FsCmd.c` and the hex upload end to end use the real manager on it, so their tests check the files themselves.
 
-What only the board can show (CRACEN, the flash-backed ITS, the external flash over SPI or sQSPI, the radio) is left to `hil-tests`.
+What only the board can show (CRACEN, the flash-backed ITS, the external flash over SPI or sQSPI, the radio, the MCP2518FD Click on a CAN bus) is left to `hil-tests`.
 
 ## Layout
 
@@ -60,6 +61,11 @@ shim/                  single-threaded stand-in for the Zephyr kernel, logging a
   zephyr/settings/, hw_unique_key.h, dk_buttons_and_leds.h (buttons and LEDs)
                          declarations only (tests define the functions); settings has
                          init, save, delete and the static handler macro
+  zephyr/device.h, devicetree.h  struct device, device_is_ready() (declared), DT_CHOSEN() and
+                         DEVICE_DT_GET(): DEVICE_DT_GET(DT_CHOSEN(x)) is gst_simDev_x, which the
+                         test defines
+  zephyr/drivers/can.h   Zephyr's CAN types, flags, modes, states and DLC helpers; the controller
+                         API declared only (CAN_MAX_DLEN follows CONFIG_CAN_FD_MODE)
   psa/                   PSA ITS types and declarations (Zephyr's size_t signatures)
   psa_stub/psa/          PSA Crypto types, constants and declarations only, with recording
                          key-attribute setters; on the include path of the tests that stub PSA
@@ -79,6 +85,10 @@ unit/DataStore/        test_datastore.c (built with and without CONFIG_DS_HEX_DU
 unit/FsCmd/            test_fscmd.c: the file commands against every golden frame, the refusals
                        and limits, on the real router and File System Manager (built with and
                        without CONFIG_FS_CMD)
+unit/CanIf/            test_canif.c: the CAN interface against a scripted controller (init, self-test,
+                       send, filters, the queue's reserve, states, traffic log, configure with
+                       rollback, lock, test frames); built as canif (CAN FD, self-test and log on)
+                       and canif_classic (CAN 2.0, both off)
 unit/SETUSvc/           test_router.c: appType router registration, dispatch, filter and the
                        shared Client (attach on behalf of a module, results back to it)
 unit/Prov/             test_prov.c: provisioning flow, storage order, boot restore and the wipe,

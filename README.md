@@ -2,7 +2,7 @@
 
 *Crosses the gap, carries the mountain, proves who sent him.*
 
-Zephyr / nRF Connect SDK firmware for a BLE device on the **nRF54L15 DK**. It receives bulk data over GATT, stores uploads as files on the DK's external flash, can be provisioned with a device certificate, and can pair with another provisioned device through certificate-based OOB pairing. A PC GUI uploads to the device, browses its files, provisions it and orchestrates the pairing.
+Zephyr / nRF Connect SDK firmware for a BLE device on the **nRF54L15 DK**. It receives bulk data over GATT, stores uploads as files on the DK's external flash, can be provisioned with a device certificate, and can pair with another provisioned device through certificate-based OOB pairing. A MikroE MCP2518FD Click gives it a CAN / CAN FD bus, the base for ECU flashing over UDS. A PC GUI uploads to the device, browses its files, provisions it and orchestrates the pairing.
 
 Everything travels over **SETU** (Sliding-window, Error-checked Transfer Utility), the bulk-transfer protocol in [`_LIB/SETU`](_LIB/SETU), meant to be reused by other BLE projects. SETU was called BulkXfer before; only the name changed, and the GATT UUIDs and wire format are the same (SETU v2 = BulkXfer protocol version 2).
 
@@ -14,6 +14,7 @@ Everything travels over **SETU** (Sliding-window, Error-checked Transfer Utility
   - **Device provisioning** (`0x20`–`0x2F`): phase 1 of certificate-based authentication and pairing (Silicon Labs AN1396/AN1268). The device keeps a persistent P-256 key and a CSR. The PC acts as the Certificate Authority: it fetches the CSR and returns a CA certificate and a device certificate. The device verifies both, stores both in PSA Internal Trusted Storage, deletes its CSR and logs both certificates as PEM. Stored certificates are re-verified at boot. Provisioning is one-time. A wipe (the DEPROVISION message, or holding DK Button 0 for 5 s) destroys the key, the CSR and the certificates, and the device makes a fresh key and CSR.
   - **Device pairing** (`0x30`–`0x3F`, between two devices): phase 2 (AN1396 §4.2). The PC tells two provisioned devices their roles and each other's address. The devices connect to each other and exchange and verify their device certificates against their CA. Each then signs fresh LE Secure Connections OOB data with its device key. Each verifies the other's signature, and they pair with the OOB method at security level 4, bonded. The central proves the link by writing a characteristic that only an encrypted, authenticated link may write, and the peripheral lights LED0. The PC follows both devices step by step. From then on the pair reconnects by itself, after a reset or a lost link, and encrypts with the stored keys; while that reconnected link is up, both devices blink LED0. A device keeps one link to the PC and one to its peer.
 - **File system (`_LIB/FileSysManager`)**: ported from the FileSystemPoC. A FAT volume on the first 4 MiB of the DK's MX25R6435F flash, mounted (and formatted if needed) at boot, with every operation run in order on one thread through a Zephyr SMF state machine. The flash is reached over SPI (default) or over sQSPI, the soft QSPI peripheral on the FLPR core (`FLASH_IF=sqspi`).
+- **CAN / CAN FD (`_ASW/_CAN`)**: an MCP2518FD Click on SPI, driven by Zephyr's `microchip,mcp251xfd` driver. The `CanIf` module owns the controller. It starts in CAN FD mode at 500 kbit/s nominal and 2 Mbit/s data, and changes mode and bitrates at runtime. It lets other modules send frames and receive filtered frames, reports error states and bus-off to listeners, and logs received traffic on the serial terminal. There is no BLE access to CAN yet; it is the base for flashing ECUs over UDS.
 - **SETU library (`_LIB/SETU`)**: the transfer protocol itself. The firmware runs both roles: the Server receives uploads, certificates and a peer's pairing data, and the Client sends the CSR to the PC and its own pairing data to the peer. The roles move between live links (`gi_SETUS_Rebind()`, `gi_SETUC_Detach()`).
 - **PC GUI** ([`_TOOLS/BleHostGUI`](_TOOLS/BleHostGUI/README.md)): a navigation rail with Device (scan, connect, read CAPS), Hex upload (optionally stored as a file), Files (the UART harness's command line and buttons, a listing, read data, download), Provisioning (the PC is the CA), Pairing (choose two devices and their roles, follow both live), Log and a switchable BLE traffic monitor. It hosts the PC's own SETU service so that the device can send its CSR. The command-line client `setu_client.py` does the same uploads, file commands, provisioning and pairing without the GUI.
 - **Memory report** ([`_TOOLS/MemReport`](_TOOLS/MemReport/README.md)): every firmware build prints FLASH and RAM use per module of `_ASW` and `_LIB` below the linker's summary, read from the map file.
@@ -64,12 +65,20 @@ The contract is in [_DOC/Provisioning/PROTOCOL.md](_DOC/Provisioning/PROTOCOL.md
 
 The contract is in [_DOC/Pairing/PROTOCOL.md](_DOC/Pairing/PROTOCOL.md). Design, security notes and limitations are in [_DOC/Pairing/README.md](_DOC/Pairing/README.md).
 
+## CAN in brief
+
+- MCP2518FD Click (MCP2518FD controller, ATA6563 transceiver, 40 MHz oscillator) on `spi21`: SCK P1.11, MOSI P1.14, MISO P1.09, CS P1.08, INT P1.12. The click takes over Button 1, Button 2 and LED3; Button 0 and LED0 keep their roles. **The DK's VDD must be set to 3.3 V** (Board Configurator) before wiring.
+- `CanIf` (`_ASW/_CAN`): `gi_CanIf_Send()` and `gi_CanIf_AddRxFilter()` (callbacks on its own thread), `gi_CanIf_Configure()` (classic/FD, listen-only, bitrates; rolls back on failure), a bus lock for a flash session, state listeners, a rate-limited traffic log and `gi_CanIf_GetStatus()`.
+- Boot configuration in Kconfig (`CONFIG_CANIF_*`). A loopback self-test and periodic test frames exist for the bench; both are off, because both transmit on the bus.
+
+Wiring, configuration, the API contract, limitations and the road to UDS flashing are in [_DOC/CAN/README.md](_DOC/CAN/README.md).
+
 ## Repository layout
 
 | Path | Contents |
 |---|---|
-| [`_ASW/`](_ASW) | Application: `main.c` plus modules for BLE init, the host and peer links and advertising (`_BLE`), the Device Information service (`_GAP`), the SETU GATT service and appType router (`_SETU_SVC`), the RAM segment store, its serial log and the upload file (`_DATA_STORE`), the file commands over BLE (`_FS_CMD`), the device key and CSR (`_CSR`), certificate storage and X.509 verification (`_DEVICE_CERT`), the provisioning protocol and wipe button (`_PROV`), certificate-based pairing and the Pairing service (`_PAIR`), logging and helpers |
-| [`_DI/`](_DI) | Build configuration: `prj.conf` (including the FAT file system, PSA crypto on CRACEN, secure storage, Mbed TLS X.509, the DK library, the central role, SMP and bonds), application Kconfig options (`Kconfig`), the board devicetree overlay (console UART at 921600 baud), and per flash interface a Kconfig fragment (`conf/flash_<if>.conf`) and an overlay (`boards/<board>_flash_<if>.overlay`) |
+| [`_ASW/`](_ASW) | Application: `main.c` plus modules for BLE init, the host and peer links and advertising (`_BLE`), the Device Information service (`_GAP`), the SETU GATT service and appType router (`_SETU_SVC`), the RAM segment store, its serial log and the upload file (`_DATA_STORE`), the file commands over BLE (`_FS_CMD`), the device key and CSR (`_CSR`), certificate storage and X.509 verification (`_DEVICE_CERT`), the provisioning protocol and wipe button (`_PROV`), certificate-based pairing and the Pairing service (`_PAIR`), the CAN / CAN FD interface (`_CAN`), logging and helpers |
+| [`_DI/`](_DI) | Build configuration: `prj.conf` (including the FAT file system, PSA crypto on CRACEN, secure storage, Mbed TLS X.509, the DK library, the central role, SMP and bonds, CAN FD), application Kconfig options (`Kconfig`), the board devicetree overlay (console UART at 921600 baud, the MCP2518FD Click on `spi21`), and per flash interface a Kconfig fragment (`conf/flash_<if>.conf`) and an overlay (`boards/<board>_flash_<if>.overlay`) |
 | [`_LIB/GATT_CB/`](_LIB/GATT_CB) | Generic GATT read/write callbacks driven by per-characteristic descriptors |
 | [`_LIB/SETU/`](_LIB/SETU) | SETU, the bulk-transfer library (Server and Client roles) |
 | [`_LIB/FileSysManager/`](_LIB/FileSysManager) | FAT file system on the external flash: mount, one thread, a state machine, results per command |
@@ -100,6 +109,8 @@ The build configurations are under version control in [CMakePresets.json](CMakeP
 
 Below the linker's FLASH/RAM summary, the build prints the same figures per module of `_ASW` and `_LIB` (with Zephyr, NCS and libc as one "Other" row) and writes them to `zephyr/mem_report.txt` in the image's build folder; see [MemReport](_TOOLS/MemReport/README.md).
 
+The firmware runs without the CAN click: it logs that the controller is not ready and carries on. Before wiring the click, set the DK's VDD to 3.3 V in nRF Connect Board Configurator (it ships at 1.8 V); the wiring is in [_DOC/CAN/README.md](_DOC/CAN/README.md#1-hardware).
+
 After changing the layout or configuration, do a pristine build (`-p always`). A chip erase also erases the device's key, so the device makes a new key and CSR and has to be provisioned again.
 
 ## Using it from a PC
@@ -125,11 +136,11 @@ Pairing needs two DKs provisioned by the same CA (a device certified by another 
 
 The CA folder holds the CA's private key. A folder named `_CA/` at the repository root is ignored by git; keep the CA there or outside the repository, and never commit it.
 
-The board's serial terminal runs at **921600 baud with RTS/CTS flow control** (set in the board overlay). It shows the mount of the file system, the received segments and each stored file (`FILE … size= crc=`), after provisioning both certificates as PEM, and each step of a pairing. To see every byte of an upload, set `CONFIG_DS_HEX_DUMP=y` in `_DI/prj.conf`; each 64 KiB segment then holds the upload for several seconds while it prints.
+The board's serial terminal runs at **921600 baud with RTS/CTS flow control** (set in the board overlay). It shows the mount of the file system, the received segments and each stored file (`FILE … size= crc=`), after provisioning both certificates as PEM, each step of a pairing, the CAN controller's configuration and error states, and received CAN frames (at most 20 a second; `CONFIG_CANIF_LOG_RX`). To see every byte of an upload, set `CONFIG_DS_HEX_DUMP=y` in `_DI/prj.conf`; each 64 KiB segment then holds the upload for several seconds while it prints.
 
 ## Testing
 
-Host tests cover `_LIB/SETU`, `_LIB/GATT_CB`, `_LIB/FileSysManager` (on an in-memory volume), every application module that is not only calls into the BT stack (data store with its upload files, file commands, router, CSR, certificate storage, provisioning, wipe button, pairing, helpers), and the PC client, file commands, CA, pairing orchestrator, decoders, GUI pages and memory report in `_TOOLS`. Certificate verification runs on the real Mbed TLS, against certificates that the PC's CA issues on each build, including the cases the device must reject; the signed OOB data runs on the real TF-PSA-Crypto against a frame signed by Python. End-to-end tests run a hex upload, a full provisioning and a pairing exchange through the real SETU engine over a simulated link. Expected wire bytes come from a real upload captured in `_LOG/` and are shared by the C and Python tests.
+Host tests cover `_LIB/SETU`, `_LIB/GATT_CB`, `_LIB/FileSysManager` (on an in-memory volume), every application module that is not only calls into the BT stack (data store with its upload files, file commands, router, CSR, certificate storage, provisioning, wipe button, pairing, the CAN interface against a scripted controller, helpers), and the PC client, file commands, CA, pairing orchestrator, decoders, GUI pages and memory report in `_TOOLS`. Certificate verification runs on the real Mbed TLS, against certificates that the PC's CA issues on each build, including the cases the device must reject; the signed OOB data runs on the real TF-PSA-Crypto against a frame signed by Python. End-to-end tests run a hex upload, a full provisioning and a pairing exchange through the real SETU engine over a simulated link. Expected wire bytes come from a real upload captured in `_LOG/` and are shared by the C and Python tests.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File _TEST\run_tests.ps1   # add -Coverage for coverage
@@ -152,6 +163,7 @@ This needs a host `gcc` and Python 3.8+. The report is written to `build_test/re
 - [Device provisioning design](_DOC/Provisioning/README.md)
 - [Device pairing protocol](_DOC/Pairing/PROTOCOL.md)
 - [Device pairing design](_DOC/Pairing/README.md)
+- [CAN / CAN FD: hardware, configuration and API](_DOC/CAN/README.md)
 - [CBAP application notes (AN1396, AN1268)](_DOC/CBAP/)
 - [Bootloader User Guide (GBL file format)](<_DOC/GBL Format/>)
 - [BLE Host GUI](_TOOLS/BleHostGUI/README.md)

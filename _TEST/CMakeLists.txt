@@ -183,6 +183,18 @@ add_unit_test(fscmd_disabled
    SOURCES unit/FsCmd/test_fscmd.c ${SHIM_DIR}/fs_sim.c
    INCLUDES ${FSCMD_INCLUDES})
 
+# ---- _ASW/_CAN -------------------------------------------------------------------
+# CAN / CAN FD interface against a scripted controller (Zephyr's CAN API): a CAN
+# FD build with the self-test and traffic log, and a CAN 2.0 build with neither
+set(CANIF_INCLUDES ${ASW_DIR}/_CAN)
+add_unit_test(canif
+   SOURCES unit/CanIf/test_canif.c
+   INCLUDES ${CANIF_INCLUDES}
+   DEFINES CONFIG_CAN_FD_MODE=1 CONFIG_CANIF_FD=1 CONFIG_CANIF_SELFTEST=1 CONFIG_CANIF_LOG_RX=1)
+add_unit_test(canif_classic
+   SOURCES unit/CanIf/test_canif.c
+   INCLUDES ${CANIF_INCLUDES})
+
 # ---- _ASW/_SETU_SVC -----------------------------------------------------------
 # The appType router, with the GATT service and both SETU roles stubbed
 add_unit_test(setu_router
@@ -294,6 +306,7 @@ set(CHECKED_HEADERS
    ${FSMGR_DIR}/FileSysManager.h ${FSMGR_DIR}/FileSysManagerFSM.h
    ${FSMGR_DIR}/FileSysManager_Types.h ${FSMGR_DIR}/FileSysManager_Config.h
    ${ASW_DIR}/_FS_CMD/FsCmd.h
+   ${ASW_DIR}/_CAN/CanIf.h
    ${GATT_CB_DIR}/GATT_CB_Types.h ${GATT_CB_DIR}/GATT_GenericCallbacks.h
    ${ASW_DIR}/_SETU_SVC/SETUSvc.h ${ASW_DIR}/_SETU_SVC/SETURouter.h ${ASW_DIR}/_DATA_STORE/DataStore.h
    ${ASW_DIR}/_PROV/Prov.h ${ASW_DIR}/_PROV/ProvButton.h

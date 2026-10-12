@@ -12,6 +12,7 @@
 /*                                  INCLUDES                                  */
 /*                                                                            */
 /******************************************************************************/
+#include "CanIf.h"
 #include "ConnectionHandling.h"
 #include "DataStore.h"
 #include "FsCmd.h"
@@ -47,8 +48,8 @@
 /**
  * @public        main
  * @brief         Starts the File System Manager, initializes the SETU users (hex
- *                upload, file commands, provisioning, pairing), the SETU Server and
- *                Client, the BLE stack and starts advertising.
+ *                upload, file commands, provisioning, pairing), the CAN interface,
+ *                the SETU Server and Client, the BLE stack and starts advertising.
  * @return        0 upon successful execution.
  */
 int main(void)
@@ -70,6 +71,12 @@ int main(void)
    // Certificate-based pairing with another device: its appType range, the SMP
    // callbacks and the LED
    (void)gi_Pair_Init();
+
+#if defined(CONFIG_CANIF)
+   // The CAN / CAN FD controller (MCP2518FD Click): boot configuration, traffic
+   // log. Without the click it logs an error and the rest runs on.
+   (void)gi_CanIf_Init();
+#endif // CONFIG_CANIF
 
    // Start the SETU Server and Client before advertising, so they are ready
    // for the first connection. They need no Bluetooth stack yet.
