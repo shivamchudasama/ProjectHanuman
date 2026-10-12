@@ -805,5 +805,582 @@
         "hex": "0341110105"
       }
     ]
+  },
+  "uds_cmd": {
+    "_comment": [
+      "BLE messages for UDS (_DOC/UDS/PROTOCOL.md), SETU short messages on the host link.",
+      "TARGET [seq][flags][u32 bitrate][u32 data bitrate][u32 tx id][u32 rx id][u32 func id]",
+      "[ext addr][tx dl][pad byte][u16 P2 ms][u16 P2* ms]; RESULT [seq][ref appType][status]",
+      "[data]; DIAG_REQ [seq][flags][request]; DIAG_RSP [seq][status][u16 total][u16 offset]",
+      "[part]; UNLOCK [seq][level][algo]; FLASH [seq][params][u8 name len][name]; STATUS",
+      "[state][step][rec idx][rec cnt][u32 done][u32 total][last SID][last NRC][status];",
+      "ABORT, STATUS_REQ [seq]. Numbers little-endian. Written by _TEST/tools/gen_uds_vector.py."
+    ],
+    "app_types": {
+      "TARGET": 80,
+      "RESULT": 81,
+      "DIAG_REQ": 82,
+      "DIAG_RSP": 83,
+      "UNLOCK": 84,
+      "FLASH": 85,
+      "STATUS": 86,
+      "ABORT": 87,
+      "STATUS_REQ": 88
+    },
+    "app_type_range": [
+      80,
+      95
+    ],
+    "status": {
+      "OK": 0,
+      "BUSY": 1,
+      "BAD_ARG": 2,
+      "BAD_STATE": 3,
+      "NOT_READY": 4,
+      "NRC": 5,
+      "TIMEOUT": 6,
+      "TRANSPORT": 7,
+      "BUS_OFF": 8,
+      "FILE": 9,
+      "ABORTED": 10,
+      "NOT_SUPPORTED": 11
+    },
+    "states": {
+      "IDLE": 0,
+      "RUNNING": 1,
+      "DONE": 2,
+      "FAILED": 3,
+      "ABORTED": 4
+    },
+    "steps": {
+      "NONE": 0,
+      "EXT_SESSION": 1,
+      "DTC_OFF": 2,
+      "COMM_OFF": 3,
+      "PROG_SESSION": 4,
+      "SECURITY": 5,
+      "FINGERPRINT": 6,
+      "ERASE": 7,
+      "DOWNLOAD": 8,
+      "TRANSFER": 9,
+      "EXIT": 10,
+      "CHECK": 11,
+      "RESET": 12,
+      "DONE": 13
+    },
+    "target_flags": {
+      "EXT_ID": 1,
+      "FD": 2,
+      "BRS": 4,
+      "PAD": 8,
+      "EXT_ADDR": 16,
+      "FUNC": 32
+    },
+    "diag_flags": {
+      "FUNCTIONAL": 1
+    },
+    "flash_flags": {
+      "EXT_SESSION": 1,
+      "DTC_OFF": 2,
+      "COMM_OFF": 4,
+      "SECURITY": 8,
+      "FINGERPRINT": 16,
+      "ERASE": 32,
+      "ERASE_PER_RECORD": 64,
+      "CHECK": 128,
+      "CHECK_CRC": 256,
+      "RESET": 512
+    },
+    "algos": {
+      "NONE": 0,
+      "BENCH_XOR": 1
+    },
+    "limits": {
+      "target_len": 29,
+      "params_len": 34,
+      "status_len": 15,
+      "fingerprint_max": 16,
+      "name_max": 32,
+      "diag_req_max": 240,
+      "diag_part_max": 236
+    },
+    "sim_params": {
+      "flags": 1023,
+      "security_level": 1,
+      "key_algo": 1,
+      "comm_control": 3,
+      "comm_type": 1,
+      "reset_type": 1,
+      "alfid": 68,
+      "dfi": 0,
+      "erase_rid": 65280,
+      "check_rid": 65281,
+      "max_block": 0,
+      "fingerprint_did": 61786,
+      "fingerprint_hex": "20261012010203"
+    },
+    "sim_params_hex": "ff030101030101440000ff01ff00005af10720261012010203000000000000000000",
+    "vin": "WMI0HANUMAN000001",
+    "long_response_hex": "5902ff00070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a1118",
+    "shorts": [
+      {
+        "name": "target_classic",
+        "app_type": 80,
+        "seq": 1,
+        "flags": 40,
+        "bitrate": 500000,
+        "data_bitrate": 0,
+        "tx_id": 2016,
+        "rx_id": 2024,
+        "func_id": 2015,
+        "ext_addr": 0,
+        "dl": 8,
+        "pad": 204,
+        "p2": 0,
+        "p2star": 0,
+        "hex": "1d50012820a1070000000000e0070000e8070000df0700000008cc00000000"
+      },
+      {
+        "name": "target_fd_29bit",
+        "app_type": 80,
+        "seq": 2,
+        "flags": 15,
+        "bitrate": 500000,
+        "data_bitrate": 2000000,
+        "tx_id": 416944369,
+        "rx_id": 417001744,
+        "func_id": 0,
+        "ext_addr": 0,
+        "dl": 64,
+        "pad": 204,
+        "p2": 100,
+        "p2star": 6000,
+        "hex": "1d50020f20a1070080841e00f110da1810f1da18000000000040cc64007017"
+      },
+      {
+        "name": "result_target_ok",
+        "app_type": 81,
+        "seq": 1,
+        "ref": 80,
+        "status": 0,
+        "data_hex": "",
+        "hex": "0351015000"
+      },
+      {
+        "name": "result_target_busy",
+        "app_type": 81,
+        "seq": 2,
+        "ref": 80,
+        "status": 1,
+        "data_hex": "",
+        "hex": "0351025001"
+      },
+      {
+        "name": "diag_req_vin",
+        "app_type": 82,
+        "seq": 3,
+        "flags": 0,
+        "request_hex": "22f190",
+        "hex": "0552030022f190"
+      },
+      {
+        "name": "diag_req_functional",
+        "app_type": 82,
+        "seq": 4,
+        "flags": 1,
+        "request_hex": "3e00",
+        "hex": "045204013e00"
+      },
+      {
+        "name": "diag_rsp_vin",
+        "app_type": 83,
+        "seq": 3,
+        "status": 0,
+        "total": 20,
+        "offset": 0,
+        "data_hex": "62f190574d493048414e554d414e303030303031",
+        "hex": "1a5303001400000062f190574d493048414e554d414e303030303031"
+      },
+      {
+        "name": "diag_rsp_nrc",
+        "app_type": 83,
+        "seq": 5,
+        "status": 5,
+        "total": 3,
+        "offset": 0,
+        "data_hex": "7f2231",
+        "hex": "09530505030000007f2231"
+      },
+      {
+        "name": "diag_rsp_timeout",
+        "app_type": 83,
+        "seq": 6,
+        "status": 6,
+        "total": 0,
+        "offset": 0,
+        "data_hex": "",
+        "hex": "0653060600000000"
+      },
+      {
+        "name": "diag_rsp_suppressed",
+        "app_type": 83,
+        "seq": 4,
+        "status": 0,
+        "total": 0,
+        "offset": 0,
+        "data_hex": "",
+        "hex": "0653040000000000"
+      },
+      {
+        "name": "diag_rsp_long_part0",
+        "app_type": 83,
+        "seq": 7,
+        "status": 0,
+        "total": 300,
+        "offset": 0,
+        "data_hex": "5902ff00070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a5158",
+        "hex": "f25307002c0100005902ff00070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a5158"
+      },
+      {
+        "name": "diag_rsp_long_part1",
+        "app_type": 83,
+        "seq": 7,
+        "status": 0,
+        "total": 300,
+        "offset": 236,
+        "data_hex": "5f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a1118",
+        "hex": "465307002c01ec005f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a1118"
+      },
+      {
+        "name": "unlock_l1",
+        "app_type": 84,
+        "seq": 8,
+        "level": 1,
+        "algo": 1,
+        "hex": "0354080101"
+      },
+      {
+        "name": "result_unlock_ok",
+        "app_type": 81,
+        "seq": 8,
+        "ref": 84,
+        "status": 0,
+        "data_hex": "",
+        "hex": "0351085400"
+      },
+      {
+        "name": "result_unlock_nrc",
+        "app_type": 81,
+        "seq": 9,
+        "ref": 84,
+        "status": 5,
+        "data_hex": "35",
+        "hex": "045109540535"
+      },
+      {
+        "name": "result_unlock_unknown_algo",
+        "app_type": 81,
+        "seq": 10,
+        "ref": 84,
+        "status": 11,
+        "data_hex": "",
+        "hex": "03510a540b"
+      },
+      {
+        "name": "flash_app1",
+        "app_type": 85,
+        "seq": 11,
+        "file": "APP1.BIN",
+        "hex": "2c550bff030101030101440000ff01ff00005af1072026101201020300000000000000000008415050312e42494e"
+      },
+      {
+        "name": "result_flash_ok",
+        "app_type": 81,
+        "seq": 11,
+        "ref": 85,
+        "status": 0,
+        "data_hex": "",
+        "hex": "03510b5500"
+      },
+      {
+        "name": "result_flash_not_ready",
+        "app_type": 81,
+        "seq": 12,
+        "ref": 85,
+        "status": 4,
+        "data_hex": "",
+        "hex": "03510c5504"
+      },
+      {
+        "name": "status_running",
+        "app_type": 86,
+        "state": 1,
+        "step": 9,
+        "rec_idx": 0,
+        "rec_cnt": 2,
+        "done": 16,
+        "total": 30,
+        "last_sid": 54,
+        "last_nrc": 0,
+        "status": 0,
+        "hex": "0f5601090002100000001e000000360000"
+      },
+      {
+        "name": "status_done",
+        "app_type": 86,
+        "state": 2,
+        "step": 13,
+        "rec_idx": 2,
+        "rec_cnt": 2,
+        "done": 30,
+        "total": 30,
+        "last_sid": 17,
+        "last_nrc": 0,
+        "status": 0,
+        "hex": "0f56020d02021e0000001e000000110000"
+      },
+      {
+        "name": "status_failed_nrc",
+        "app_type": 86,
+        "state": 3,
+        "step": 9,
+        "rec_idx": 1,
+        "rec_cnt": 2,
+        "done": 20,
+        "total": 30,
+        "last_sid": 54,
+        "last_nrc": 114,
+        "status": 5,
+        "hex": "0f5603090102140000001e000000367205"
+      },
+      {
+        "name": "status_idle",
+        "app_type": 86,
+        "state": 0,
+        "step": 0,
+        "rec_idx": 0,
+        "rec_cnt": 0,
+        "done": 0,
+        "total": 0,
+        "last_sid": 0,
+        "last_nrc": 0,
+        "status": 0,
+        "hex": "0f56000000000000000000000000000000"
+      },
+      {
+        "name": "abort",
+        "app_type": 87,
+        "seq": 13,
+        "hex": "01570d"
+      },
+      {
+        "name": "result_abort_ok",
+        "app_type": 81,
+        "seq": 13,
+        "ref": 87,
+        "status": 0,
+        "data_hex": "",
+        "hex": "03510d5700"
+      },
+      {
+        "name": "status_req",
+        "app_type": 88,
+        "seq": 14,
+        "hex": "01580e"
+      }
+    ]
+  },
+  "uds_key": {
+    "_comment": [
+      "Seed -> key (_ASW/_UDS/UdsKey.c). BENCH_XOR (algo 1), for the bench only:",
+      "key[i] = rotl8(seed[i] ^ mask[i % 4] ^ level, 1), mask = 5A A5 3C C3; the key is",
+      "as long as the seed. Algorithms 0x80-0xFF are OEM ones (not in the repository).",
+      "Written by _TEST/tools/gen_uds_vector.py."
+    ],
+    "mask_hex": "5aa53cc3",
+    "cases": [
+      {
+        "name": "l1_4byte",
+        "algo": 1,
+        "level": 1,
+        "seed_hex": "11223344",
+        "key_hex": "940d1c0d"
+      },
+      {
+        "name": "l3_4byte",
+        "algo": 1,
+        "level": 3,
+        "seed_hex": "deadbeef",
+        "key_hex": "0f16035e"
+      },
+      {
+        "name": "l1_2byte",
+        "algo": 1,
+        "level": 1,
+        "seed_hex": "0001",
+        "key_hex": "b64b"
+      },
+      {
+        "name": "l5_8byte",
+        "algo": 1,
+        "level": 5,
+        "seed_hex": "0123456789abcdef",
+        "key_hex": "bc07f843ad16e952"
+      }
+    ]
+  },
+  "uds_flash": {
+    "_comment": [
+      "A flash job's UDS conversation (_DOC/UDS/README.md) with the simulator's",
+      "parameters (uds_cmd.sim_params): the stored file holds the two records, the",
+      "ECU's RequestDownload answer allows 18-byte blocks (16 data bytes), and the",
+      "programming session is answered with one NRC 0x78 first. Every step is a request",
+      "and the ECU's responses in order. The check routine carries the CRC-32 (IEEE,",
+      "big-endian) of the records' data. Written by _TEST/tools/gen_uds_vector.py."
+    ],
+    "image": [
+      {
+        "address": 32768,
+        "data_hex": "101112131415161718191a1b1c1d1e1f20212223"
+      },
+      {
+        "address": 65536,
+        "data_hex": "a0a1a2a3a4a5a6a7a8a9"
+      }
+    ],
+    "file_hex": "0080000014000000101112131415161718191a1b1c1d1e1f20212223000001000a000000a0a1a2a3a4a5a6a7a8a9",
+    "image_crc32": 2609953872,
+    "image_bytes": 30,
+    "seed_hex": "11223344",
+    "max_block": 18,
+    "steps": [
+      {
+        "name": "ext_session",
+        "req_hex": "1003",
+        "rsp_hex": [
+          "5003003201f4"
+        ]
+      },
+      {
+        "name": "dtc_off",
+        "req_hex": "8502",
+        "rsp_hex": [
+          "c502"
+        ]
+      },
+      {
+        "name": "comm_off",
+        "req_hex": "280301",
+        "rsp_hex": [
+          "6803"
+        ]
+      },
+      {
+        "name": "prog_session",
+        "req_hex": "1002",
+        "rsp_hex": [
+          "7f1078",
+          "5002003201f4"
+        ]
+      },
+      {
+        "name": "seed",
+        "req_hex": "2701",
+        "rsp_hex": [
+          "670111223344"
+        ]
+      },
+      {
+        "name": "key",
+        "req_hex": "2702940d1c0d",
+        "rsp_hex": [
+          "6702"
+        ]
+      },
+      {
+        "name": "fingerprint",
+        "req_hex": "2ef15a20261012010203",
+        "rsp_hex": [
+          "6ef15a"
+        ]
+      },
+      {
+        "name": "erase_0",
+        "req_hex": "3101ff00440000800000000014",
+        "rsp_hex": [
+          "7101ff0000"
+        ]
+      },
+      {
+        "name": "download_0",
+        "req_hex": "3400440000800000000014",
+        "rsp_hex": [
+          "74200012"
+        ]
+      },
+      {
+        "name": "transfer_0_1",
+        "req_hex": "3601101112131415161718191a1b1c1d1e1f",
+        "rsp_hex": [
+          "7601"
+        ]
+      },
+      {
+        "name": "transfer_0_2",
+        "req_hex": "360220212223",
+        "rsp_hex": [
+          "7602"
+        ]
+      },
+      {
+        "name": "exit_0",
+        "req_hex": "37",
+        "rsp_hex": [
+          "77"
+        ]
+      },
+      {
+        "name": "erase_1",
+        "req_hex": "3101ff0044000100000000000a",
+        "rsp_hex": [
+          "7101ff0000"
+        ]
+      },
+      {
+        "name": "download_1",
+        "req_hex": "340044000100000000000a",
+        "rsp_hex": [
+          "74200012"
+        ]
+      },
+      {
+        "name": "transfer_1_1",
+        "req_hex": "3601a0a1a2a3a4a5a6a7a8a9",
+        "rsp_hex": [
+          "7601"
+        ]
+      },
+      {
+        "name": "exit_1",
+        "req_hex": "37",
+        "rsp_hex": [
+          "77"
+        ]
+      },
+      {
+        "name": "check",
+        "req_hex": "3101ff019b90bc50",
+        "rsp_hex": [
+          "7101ff0100"
+        ]
+      },
+      {
+        "name": "reset",
+        "req_hex": "1101",
+        "rsp_hex": [
+          "5101"
+        ]
+      }
+    ]
   }
 }

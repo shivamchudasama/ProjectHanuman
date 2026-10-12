@@ -71,6 +71,15 @@ bool gb_DataStore_UploadOpen(void)
    return sb_uploadOpen;
 }
 
+#if defined(CONFIG_UDS)
+static bool sb_flashRunning;
+
+bool gb_UdsJob_FlashRunning(void)
+{
+   return sb_flashRunning;
+}
+#endif // CONFIG_UDS
+
 void gv_SimOnBlock(struct k_sem *stpt_sem)
 {
    (void)stpt_sem;
@@ -183,6 +192,9 @@ void setUp(void)
    atomic_set(&st_busy, 0);
    si_sendRet = 0;
    sb_uploadOpen = false;
+#if defined(CONFIG_UDS)
+   sb_flashRunning = false;
+#endif // CONFIG_UDS
    su32_sentCount = 0U;
    gv_SimLogClear();
    sv_Mount(true);
@@ -447,6 +459,16 @@ static void test_BusyWhileUploadIsStored(void)
    TEST_ASSERT_EQUAL_UINT32(0U, gu32_SimFsCalls(eSFS_OPEN));
 }
 
+#if defined(CONFIG_UDS)
+static void test_BusyWhileFlashing(void)
+{
+   sb_flashRunning = true;
+   sv_CmdRaw(15U, eFSOP_OPENW, "a", 1U);
+   sv_AssertLast("reply_busy");
+   TEST_ASSERT_EQUAL_UINT32(0U, gu32_SimFsCalls(eSFS_OPEN));
+}
+#endif // CONFIG_UDS
+
 static void test_BusyWhenManagerQueueFull(void)
 {
    FileSysMessage_T st_msg;
@@ -515,6 +537,9 @@ int main(void)
    RUN_TEST(test_MalformedOrForeignShortsIgnored);
    RUN_TEST(test_BusyWhileACommandRuns);
    RUN_TEST(test_BusyWhileUploadIsStored);
+#if defined(CONFIG_UDS)
+   RUN_TEST(test_BusyWhileFlashing);
+#endif // CONFIG_UDS
    RUN_TEST(test_BusyWhenManagerQueueFull);
    RUN_TEST(test_LongEntryPathIsCut);
    RUN_TEST(test_SendFailureStillFreesTheSlot);

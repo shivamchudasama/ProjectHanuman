@@ -213,6 +213,81 @@ endif # CANIF
 
 endmenu
 
+menu "UDS"
+
+config UDS
+	bool "UDS diagnostics and ECU flashing over CAN (_LIB/UdsClient, _ASW/_UDS)"
+	default y
+	depends on CANIF && ISOTP
+	help
+	  The UDS client (ISO 14229, tester side) on Zephyr's ISO-TP, and the
+	  job engine that sends diagnostic requests and flashes stored files
+	  to an ECU. _DOC/UDS/README.md.
+
+if UDS
+
+config UDS_CMD
+	bool "UDS over BLE (appTypes 0x50-0x5F)"
+	default y
+	help
+	  Lets the host (setu_client.py uds and flash) set the target ECU,
+	  send diagnostic requests, unlock, and start a flash job. Like the
+	  file commands, it runs on the unauthenticated host link: anyone who
+	  can connect can flash a connected ECU. Turn it off in production
+	  builds until the host is authenticated.
+
+config UDS_P2_MS
+	int "Default P2 (ms)"
+	default 150
+	range 20 5000
+	help
+	  Wait for a response until the ECU's session response gives its own
+	  P2 (plus 50 ms).
+
+config UDS_P2STAR_MS
+	int "Default P2* (ms)"
+	default 5000
+	range 100 60000
+	help
+	  Wait after NRC 0x78 (response pending) until the ECU gives its own.
+
+config UDS_TESTER_PRESENT_MS
+	int "TesterPresent period in a non-default session (ms)"
+	default 2000
+	range 500 4500
+
+config UDS_BUSY_RETRIES
+	int "Repeats after NRC 0x21 busyRepeatRequest"
+	default 3
+	range 0 20
+
+config UDS_RESPONSE_MAX
+	int "Longest diagnostic response (bytes)"
+	default 1024
+	range 64 4095
+
+config UDS_FLASH_BLOCK_MAX
+	int "Longest TransferData request (bytes)"
+	default 2048
+	range 16 4095
+	help
+	  The flash job's block buffer: TransferData requests are the ECU's
+	  maxNumberOfBlockLength, capped by this.
+
+config UDS_JOB_STACK_SIZE
+	int "UDS job thread stack size"
+	default 3072
+
+config UDS_JOB_PRIORITY
+	int "UDS job thread priority"
+	default 7
+	help
+	  Below the CAN interface (6), above the File System Manager (10).
+
+endif # UDS
+
+endmenu
+
 menu "Device certificate subject (CSR)"
 
 config CSR_SUBJ_C

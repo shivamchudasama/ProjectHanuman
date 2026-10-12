@@ -70,7 +70,7 @@ directories below that are listed but not entered.
 | 4 | NO_SPACE | The volume is full |
 | 5 | BAD_ARG | Unknown op, empty WRITE, READ with a 1- or 3+-byte argument, empty path, path too long |
 | 6 | BAD_STATE | Not allowed now (§2 State) |
-| 7 | BUSY | Another command is in progress, the hex upload is storing a file, or the device's queue is full |
+| 7 | BUSY | Another command is in progress, the hex upload is storing a file, a UDS flash job runs ([../UDS/PROTOCOL.md](../UDS/PROTOCOL.md)), or the device's queue is full |
 | 8 | NOT_MOUNTED | The volume could not be mounted |
 | 9 | IO | Any other error |
 | 10 | NOT_SUPPORTED | DELDIR of a directory with a subdirectory |
@@ -89,7 +89,10 @@ shows the errno behind each.
 3. Only then send the next CMD. A CMD that arrives while one is in progress is answered BUSY at
    once, as is any CMD between a hex upload's BEGIN and COMMIT
    ([../HexUpload/PROTOCOL.md §7](../HexUpload/PROTOCOL.md#7-storing-the-upload-as-a-file)); BEGIN
-   in turn is refused while a file is open through these commands.
+   in turn is refused while a file is open through these commands. Every CMD is also answered
+   BUSY while a UDS flash job runs ([../UDS/PROTOCOL.md](../UDS/PROTOCOL.md)): it reads its file
+   twice. A flash job started while a file is open through these commands ends FAILED with
+   status BUSY.
 4. A CMD shorter than 2 bytes is ignored (no REPLY): it has no `seq`.
 
 To read a whole file: OPENR, READ until a REPLY without data, CLOSE. To write one: OPENW, WRITE

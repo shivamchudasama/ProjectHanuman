@@ -26,6 +26,9 @@
 #include "SETURouter.h"
 #include "DataStore.h"
 #include "FileSysManager.h"
+#if defined(CONFIG_UDS)
+#include "UdsJob.h"
+#endif // CONFIG_UDS
 #include "AppLog.h"
 
 /******************************************************************************/
@@ -358,8 +361,12 @@ static void sv_OnRxShort(uint8_t u8_appType, const uint8_t *u8pt_data, uint8_t u
    u8_seq = u8pt_data[0];
    u8_op = u8pt_data[1];
 
-   // Check if another command or the hex upload holds the file system
-   if ((atomic_get(&st_busy) != 0) || gb_DataStore_UploadOpen())
+   // Check if another command, the hex upload or a flash job holds the file system
+   if ((atomic_get(&st_busy) != 0) || gb_DataStore_UploadOpen()
+#if defined(CONFIG_UDS)
+      || gb_UdsJob_FlashRunning()
+#endif // CONFIG_UDS
+      )
    {
       APP_LOG_WRN("op %u seq %u refused: busy", u8_op, u8_seq);
       sv_SendReply(u8_seq, u8_op, (uint8_t)eFSS_BUSY, NULL, 0U);

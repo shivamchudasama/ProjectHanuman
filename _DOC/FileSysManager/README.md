@@ -131,8 +131,9 @@ In this project:
 |---|---|
 | [`_ASW/_DATA_STORE`](../../_ASW/_DATA_STORE) | `gi_FSMGR_Call()` from its dump thread: stores a hex upload as `/FLASH_DISK:/FW/<name>` ([HexUpload PROTOCOL §7](../HexUpload/PROTOCOL.md#7-storing-the-upload-as-a-file)) |
 | [`_ASW/_FS_CMD`](../../_ASW/_FS_CMD) | `gi_FSMGR_Submit()` from the SETU engine, results sent back from the manager's thread ([PROTOCOL.md](PROTOCOL.md)) |
+| [`_ASW/_UDS`](../../_ASW/_UDS) | A UDS flash job reads a stored upload with `gi_FSMGR_Call()` (open, close) and `gi_FSMGR_Submit()` reads from its own thread, twice: to check it, then to send it to the ECU ([UDS README §2](../UDS/README.md#2-the-job-engine)) |
 
-The two share the one open file: each refuses (`BUSY`) while the other holds it.
+They share the one open file. The file commands and a hex upload's BEGIN refuse (`BUSY`) while another holds it or a flash job runs; a flash job refuses to start while an upload is being stored, and ends `BUSY` if the file commands hold a file.
 
 ## Memory
 
@@ -159,7 +160,7 @@ disk layer and the 4 KiB flash disk cache come on top, under "Other" in the
 | Path | What |
 |---|---|
 | [`_TEST/unit/FileSysManager/test_fsmgr.c`](../../_TEST/unit/FileSysManager/test_fsmgr.c) | Unity tests against [API_REFERENCE.md](API_REFERENCE.md), built with and without the write buffer: mount and format, start, submit and call, every command in every state, path rules, writes, reads, failures, listing, deletion, rename, status codes. The volume is the in-memory one of `_TEST/shim/fs_sim.c` |
-| [`_TEST/unit/DataStore`](../../_TEST/unit/DataStore), [`_TEST/unit/FsCmd`](../../_TEST/unit/FsCmd) | The two users, on the real library |
+| [`_TEST/unit/DataStore`](../../_TEST/unit/DataStore), [`_TEST/unit/FsCmd`](../../_TEST/unit/FsCmd), [`_TEST/unit/Uds`](../../_TEST/unit/Uds) (`uds_job`) | The users, on the real library |
 
 The public headers are also compiled on their own by the header check. Both run locally and in
 CI (`host-tests`, with ASan + UBSan); see [`_TEST/README.md`](../../_TEST/README.md). The flash

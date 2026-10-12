@@ -29,9 +29,10 @@
 /******************************************************************************/
 /**
  * @def           SETU_ROUTER_MAX_ROUTES
- * @brief         Maximum number of registered appType ranges.
+ * @brief         Maximum number of registered appType ranges: hex upload, file
+ *                commands, provisioning, pairing and UDS.
  */
-#define SETU_ROUTER_MAX_ROUTES               (4U)
+#define SETU_ROUTER_MAX_ROUTES               (5U)
 
 /******************************************************************************/
 /*                                                                            */

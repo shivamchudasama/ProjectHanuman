@@ -180,6 +180,56 @@ def emit_file_system(hf: dict, fs: dict, o: list) -> None:
     emit_shorts("gstar_vecFsShorts", fs["shorts"], o)
 
 
+def emit_uds(cmd: dict, key: dict, flash: dict, o: list) -> None:
+    """UDS over BLE: constants, short frames, seed -> key cases, a flash conversation."""
+    o.append("/* ---- UDS over BLE (_DOC/UDS/PROTOCOL.md) ---- */")
+    for group, prefix in (("app_types", "VEC_UDS_APP_"), ("status", "VEC_UDS_ST_"),
+                          ("states", "VEC_UDS_STATE_"), ("steps", "VEC_UDS_STEP_"),
+                          ("target_flags", "VEC_UDS_TF_"), ("diag_flags", "VEC_UDS_DF_"),
+                          ("flash_flags", "VEC_UDS_FF_"), ("algos", "VEC_UDS_ALGO_")):
+        for name, val in cmd[group].items():
+            o.append(f"#define {prefix}{name} ({val}U)")
+    o.append(f"#define VEC_UDS_APP_FIRST ({cmd['app_type_range'][0]}U)")
+    o.append(f"#define VEC_UDS_APP_LAST ({cmd['app_type_range'][1]}U)")
+    for name, val in cmd["limits"].items():
+        o.append(f"#define VEC_UDS_{name.upper()} ({val}U)")
+    o.append(f"#define VEC_UDS_VIN \"{cmd['vin']}\"")
+    o.append(c_array("gu8ar_vecUdsSimParams", "VEC_UDS_SIM_PARAMS_LEN", bytes.fromhex(cmd["sim_params_hex"])))
+    o.append(c_array("gu8ar_vecUdsLongRsp", "VEC_UDS_LONG_RSP_LEN", bytes.fromhex(cmd["long_response_hex"])))
+    emit_shorts("gstar_vecUdsShorts", cmd["shorts"], o)
+
+    o.append("/* ---- Seed -> key (_ASW/_UDS/UdsKey.c) ---- */")
+    o.append("typedef struct\n{\n   const char *cpt_name;\n   uint8_t u8_algo;\n   uint8_t u8_level;\n"
+             "   uint8_t u8ar_seed[8];\n   uint8_t u8_seedLen;\n   uint8_t u8ar_key[8];\n"
+             "   uint8_t u8_keyLen;\n} UdsKeyVector_T;\n")
+    o.append("static const UdsKeyVector_T gstar_vecUdsKeys[] =\n{")
+    for c in key["cases"]:
+        seed, k = bytes.fromhex(c["seed_hex"]), bytes.fromhex(c["key_hex"])
+        o.append(f"   {{ \"{c['name']}\", {c['algo']}U, {c['level']}U, {{ {c_bytes(seed)} }}, {len(seed)}U,\n"
+                 f"      {{ {c_bytes(k)} }}, {len(k)}U }},")
+    o.append("};\n")
+
+    o.append("/* ---- A flash job's UDS conversation (_DOC/UDS/README.md) ---- */")
+    o.append(f"#define VEC_UDS_IMAGE_CRC ({flash['image_crc32']}UL)")
+    o.append(f"#define VEC_UDS_IMAGE_BYTES ({flash['image_bytes']}UL)")
+    o.append(f"#define VEC_UDS_IMAGE_RECORDS ({len(flash['image'])}U)")
+    o.append(f"#define VEC_UDS_MAX_BLOCK ({flash['max_block']}U)")
+    o.append(c_array("gu8ar_vecUdsFile", "VEC_UDS_FILE_LEN", bytes.fromhex(flash["file_hex"])))
+    o.append(c_array("gu8ar_vecUdsSeed", "VEC_UDS_SEED_LEN", bytes.fromhex(flash["seed_hex"])))
+    o.append("typedef struct\n{\n   const char *cpt_name;\n   uint8_t u8ar_req[32];\n   uint8_t u8_reqLen;\n"
+             "   uint8_t u8_rspCount;\n   uint8_t u8ar_rsp[2][16];\n   uint8_t u8ar_rspLen[2];\n} UdsStepVector_T;\n")
+    o.append("static const UdsStepVector_T gstar_vecUdsSteps[] =\n{")
+    for st in flash["steps"]:
+        req = bytes.fromhex(st["req_hex"])
+        rsps = [bytes.fromhex(r) for r in st["rsp_hex"]]
+        assert len(req) <= 32 and 1 <= len(rsps) <= 2 and all(len(r) <= 16 for r in rsps), st["name"]
+        rsp_c = ", ".join(f"{{ {c_bytes(r)} }}" for r in rsps)
+        lens = ", ".join(f"{len(r)}U" for r in rsps)
+        o.append(f"   {{ \"{st['name']}\", {{ {c_bytes(req)} }}, {len(req)}U, {len(rsps)}U,\n"
+                 f"      {{ {rsp_c} }}, {{ {lens} }} }},")
+    o.append("};\n")
+
+
 def main(json_path: str, root: str, out_path: str) -> None:
     with open(json_path) as f:
         v = json.load(f)
@@ -238,6 +288,7 @@ def main(json_path: str, root: str, out_path: str) -> None:
     emit_provisioning(v["provisioning"], o)
     emit_pairing(v["pairing"], o)
     emit_file_system(v["hex_file"], v["file_system"], o)
+    emit_uds(v["uds_cmd"], v["uds_key"], v["uds_flash"], o)
     o.append("#endif /* WIRE_VECTORS_H */\n")
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)

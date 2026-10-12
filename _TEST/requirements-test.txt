@@ -6,3 +6,6 @@ gcovr>=7
 cryptography>=43
 # The GUI's images (_TOOLS/BleHostGUI/blehost/ui/icons.py) and their tests; same pin as the GUI
 Pillow>=10
+# The ECU simulator (_TOOLS/EcuSim) and its tests on python-can's virtual bus; same pins as the tool
+python-can>=4.4
+can-isotp>=2.0

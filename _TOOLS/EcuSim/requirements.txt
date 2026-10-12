@@ -1,0 +1,3 @@
+# The ECU simulator: python-can (USB-CAN adapters, and the virtual bus) and ISO-TP
+python-can>=4.4
+can-isotp>=2.0

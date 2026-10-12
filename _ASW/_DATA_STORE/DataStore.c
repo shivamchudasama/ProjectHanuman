@@ -39,6 +39,9 @@
 #include "SETU.h"
 #include "SETURouter.h"
 #include "FileSysManager.h"
+#if defined(CONFIG_UDS)
+#include "UdsJob.h"
+#endif // CONFIG_UDS
 #include "AppLog.h"
 
 /******************************************************************************/
@@ -741,8 +744,13 @@ static void sv_Begin(const DsEvent_T *stpt_event)
       (void)si_Fs(eFSC_ABORT, NULL, 0U, 0U);
       atomic_set(&st_uploadOpen, 0);
    }
-   // Check if someone else holds the file system's one open file
-   else if (gb_FSMGR_IsFileOpen())
+   // Check if someone else holds the file system's one open file, or a flash job
+   // runs (it opens its file twice)
+   else if (gb_FSMGR_IsFileOpen()
+#if defined(CONFIG_UDS)
+      || gb_UdsJob_FlashRunning()
+#endif // CONFIG_UDS
+      )
    {
       APP_LOG_WRN("BEGIN refused: a file is open");
       sv_SendFile(DS_APP_TYPE_BEGIN, -EBUSY, 0U, 0U);

@@ -16,6 +16,10 @@ on:
         description: "Also run the pairing hardware job (needs a self-hosted runner with two DKs)"
         type: boolean
         default: false
+      hil_uds:
+        description: "Also run the UDS hardware job (a DK with its CAN click and a USB-CAN adapter on one bus)"
+        type: boolean
+        default: false
 
 env:
   NCS_VERSION: v3.4.1
@@ -311,3 +315,52 @@ jobs:
           $out = ${{ env.CLI }} pair --central ${{ env.A }} --peripheral ${{ env.B }} | Out-String
           if ($LASTEXITCODE -eq 0) { throw "paired across CAs" } else { $global:LASTEXITCODE = 0 }
           if ($out -notmatch "certificate was rejected") { throw "unexpected failure: $out" }
+
+  # ---- UDS on hardware: a DK, its CAN click, a USB-CAN adapter (placeholder, manual) ----
+  # The DK (VDD 3.3 V, MCP2518FD Click, _DOC/CAN/README.md) and the runner's USB-CAN
+  # adapter on one terminated bus; the adapter runs the ECU simulator
+  # (_TOOLS/EcuSim). Runner variables: CAN_IFACE, CAN_CHANNEL (python-can).
+  # The flash job (_DOC/UDS/README.md) must end DONE with the image the simulator
+  # received equal to the stored file, and an injected NRC must fail it cleanly.
+  hil-uds-tests:
+    needs: firmware-build
+    if: github.event_name == 'workflow_dispatch' && inputs.hil_uds
+    runs-on: [self-hosted, nrf54l15dk-can]
+    env:
+      CLI: python _TOOLS/BleHostGUI/setu_client.py
+      PROFILE: _TOOLS/EcuSim/profiles/sim.json
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: firmware
+          path: fw
+      - name: Flash the DK
+        run: nrfutil device program --firmware fw/build_ci/merged.hex --options chip_erase_mode=ERASE_ALL
+      - name: Store the image, flash it into the simulated ECU, compare
+        shell: pwsh
+        run: |
+          pip install -r _TOOLS/EcuSim/requirements.txt
+          $sim = Start-Process -PassThru -NoNewWindow python -ArgumentList "_TOOLS/EcuSim/ecu_sim.py --interface ${{ vars.CAN_IFACE }} --channel ${{ vars.CAN_CHANNEL }} --quiet --out ${{ runner.temp }}/flashed.bin"
+          try {
+            ${{ env.CLI }} hex AA00000100.hex --store HIL.BIN --name "ProjectHanuman"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            ${{ env.CLI }} uds target --profile ${{ env.PROFILE }} --name "ProjectHanuman"
+            ${{ env.CLI }} uds req 22F190 --name "ProjectHanuman"
+            ${{ env.CLI }} flash HIL.BIN --profile ${{ env.PROFILE }} --name "ProjectHanuman"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            ${{ env.CLI }} fs get /FW/HIL.BIN ${{ runner.temp }}/stored.bin --name "ProjectHanuman"
+            if ((Get-FileHash ${{ runner.temp }}/stored.bin).Hash -ne (Get-FileHash ${{ runner.temp }}/flashed.bin).Hash) {
+              throw "the ECU received another image"
+            }
+          } finally { Stop-Process -Id $sim.Id }
+      - name: An NRC fails the job cleanly, and the next one succeeds
+        shell: pwsh
+        run: |
+          $sim = Start-Process -PassThru -NoNewWindow python -ArgumentList "_TOOLS/EcuSim/ecu_sim.py --interface ${{ vars.CAN_IFACE }} --channel ${{ vars.CAN_CHANNEL }} --quiet --nrc-at 36:72"
+          try {
+            ${{ env.CLI }} flash HIL.BIN --profile ${{ env.PROFILE }} --name "ProjectHanuman"
+            if ($LASTEXITCODE -eq 0) { throw "a flash with NRC 0x72 succeeded" } else { $global:LASTEXITCODE = 0 }
+            ${{ env.CLI }} flash HIL.BIN --profile ${{ env.PROFILE }} --name "ProjectHanuman"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally { Stop-Process -Id $sim.Id }
