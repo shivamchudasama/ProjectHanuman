@@ -7,7 +7,7 @@ MCP2518FD Click. It answers the device's generic programming sequence, keeps the
 receives, and answers a few diagnostics. It needs no real ECU and no OEM seed→key algorithm.
 
 ```
-PC: setu_client.py ──BLE──► DK (UdsJob) ──CAN──► USB-CAN adapter ──► PC: ecu_sim.py
+PC: setu_client.py / BLE Host GUI ──BLE──► DK (UdsJob) ──CAN──► USB-CAN adapter ──► PC: ecu_sim.py
 ```
 
 ## Running it
@@ -24,6 +24,9 @@ python _TOOLS/BleHostGUI/setu_client.py hex app.hex --store APP1.BIN --name "Pro
 python _TOOLS/BleHostGUI/setu_client.py flash APP1.BIN --profile _TOOLS/EcuSim/profiles/sim.json --name "ProjectHanuman"
 python _TOOLS/BleHostGUI/setu_client.py fs get /FW/APP1.BIN app1.bin --name "ProjectHanuman"
 ```
+
+Or from the GUI's ECU page (_TOOLS/BleHostGUI/README.md): **Load…** `profiles/sim.json` (the
+simulator's profiles are in the format the page saves), **Apply target**, then Flash.
 
 `flashed.bin` (written after every RequestTransferExit) then equals `app1.bin`. Both are
 records `[u32 LE address][u32 LE length][data]`, the layout the device stores.

@@ -2,7 +2,8 @@
 
 This is the contract between the firmware's UDS front-end ([`_ASW/_UDS/UdsCmd.c`](../../_ASW/_UDS/UdsCmd.c),
 on top of the job engine described in [README.md](README.md)) and a host that drives UDS on the
-device: `setu_client.py uds` and `flash` ([`blehost/protocols/uds.py`](../../_TOOLS/BleHostGUI/blehost/protocols/uds.py)).
+device: `setu_client.py uds` and `flash`, and the BLE Host GUI's ECU page, both on
+[`blehost/protocols/uds.py`](../../_TOOLS/BleHostGUI/blehost/protocols/uds.py).
 
 The device itself talks UDS (ISO 14229) over ISO-TP (ISO 15765-2) on its CAN bus. The host only
 says what to do: which ECU, which request, which file to flash with which sequence. ISO-TP is

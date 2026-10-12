@@ -152,6 +152,16 @@ class Stepper(tk.Canvas):
         self.redraws = 0                             # drawn this many times (tests)
         theme.on_change(lambda _p: self._draw())
 
+    def set_steps(self, steps):
+        """Replace the list of steps (nothing run yet); redraws only when it changed."""
+        steps = list(steps)
+        if steps == self.steps:
+            return
+        self.steps = steps
+        self.current, self.state = 0, "idle"
+        self.configure(height=self.row * len(self.steps))
+        self._draw()
+
     def show(self, current: int, state: str):
         current = max(0, min(current, len(self.steps) - 1))
         if (current, state) == (self.current, self.state):

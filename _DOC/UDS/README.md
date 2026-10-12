@@ -157,7 +157,7 @@ that at once, when UNLOCK or FLASH is checked, before anything is sent.
 
 ## 6. Profiles
 
-`setu_client.py` reads an ECU's target and flash parameters from a JSON profile
+`setu_client.py` and the GUI's ECU page read an ECU's target and flash parameters from a JSON profile
 ([`_TOOLS/EcuSim/profiles/sim.json`](../../_TOOLS/EcuSim/profiles/sim.json) is the simulator's).
 Numbers may be written as `"0x7E0"`:
 
@@ -182,6 +182,10 @@ Numbers may be written as `"0x7E0"`:
 A step whose key is missing (or `null`) is left out. `algo` is a name (`BENCH_XOR`) or a number
 (`"0x80"` for an OEM algorithm).
 
+The ECU page edits every field and saves the form back in this format (**Save as…**,
+`uds.save_profile()`): IDs and identifiers as hex strings, and only the sections of the steps that
+run, so the values of a step that is off are not kept.
+
 ## 7. On the bench
 
 The ECU simulator ([`_TOOLS/EcuSim`](../../_TOOLS/EcuSim/README.md)) plays the ECU on a PC with a
@@ -205,6 +209,12 @@ USB-CAN adapter.
    - Unplugging the bus (bus-off).
 
    Each must end cleanly, with the bus restored and the next job possible.
+
+The same from the GUI ([`_TOOLS/BleHostGUI`](../../_TOOLS/BleHostGUI/README.md)): Hex Upload with
+**Store as** `APP1.BIN`; on the ECU page **Load…** `sim.json`, **Apply target**; Diagnostics:
+`22 F1 90`; Flash: **Refresh**, `APP1.BIN`, **Flash**. The step list and tiles follow the job's
+STATUS. Disconnecting during the transfer leaves the job running; on reconnecting the page asks
+STATUS_REQ and follows it to its end.
 
 ## 8. Security
 
@@ -248,7 +258,8 @@ slower) or `CONFIG_UDS_RESPONSE_MAX`.
 | `uds_job` | The job engine with the real client, keys and File System Manager (on `fs_sim.c`), a scripted ISO-TP transport and a C ECU; CanIf stubbed. See below |
 | `uds_cmd`, `uds_cmd_disabled` | Every `uds_cmd` frame decoded into the right UdsJob call and built byte for byte, long responses in parts, refusals, the range unregistered without `CONFIG_UDS_CMD` |
 | `fscmd_uds` | The file commands answer BUSY while a flash job runs |
-| `test_uds_protocol.py` | The PC codecs against the same frames, the profile loader (the simulator's profile is the vectors' target and parameters), `UdsSession` and `setu_client.py uds` / `flash` end to end against a fake device that runs the sequence on the simulator |
+| `test_uds_protocol.py` | The PC codecs against the same frames, the profile loader and writer (the simulator's profile is the vectors' target and parameters, and saves back the same), NRC names, `UdsSession` (also a job followed after a reconnect) and `setu_client.py uds` / `flash` end to end against a fake device that runs the sequence on the simulator |
+| `test_feature_ecu.py` | The GUI's ECU page against the same fake device: the form and its errors, profiles loaded and saved, target, requests, unlock, the stored-file list, flash jobs (done, refused, NRC, abort, lost link, picked up on reconnect), the SETU service's appType route, and the real page on Tk |
 | `test_ecu_sim.py` | The simulator replays `uds_flash`, its services and faults, and ISO-TP on python-can's virtual bus |
 
 `uds_job` covers:

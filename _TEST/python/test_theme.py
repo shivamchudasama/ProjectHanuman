@@ -314,6 +314,11 @@ def test_nothing_redraws_when_nothing_changed(root):
     n = st.redraws
     st.show(2, "running")
     assert st.redraws == n
+    st.set_steps(fp.STEPS)
+    assert st.redraws == n and st.current == 2, "the same steps: nothing changes"
+    st.set_steps(["one", "two"])
+    assert st.redraws == n + 1 and (st.current, st.state) == (0, "idle")
+    assert int(st.cget("height")) == 2 * st.row
 
     writes = []
     var = __import__("tkinter").StringVar(root, "a")

@@ -2,7 +2,7 @@
 
 *Crosses the gap, carries the mountain, proves who sent him.*
 
-Zephyr / nRF Connect SDK firmware for a BLE device on the **nRF54L15 DK**. It receives bulk data over GATT, stores uploads as files on the DK's external flash, can be provisioned with a device certificate, and can pair with another provisioned device through certificate-based OOB pairing. A MikroE MCP2518FD Click gives it a CAN / CAN FD bus, on which the device itself flashes and diagnoses ECUs with UDS over ISO-TP, triggered over BLE. A PC GUI uploads to the device, browses its files, provisions it and orchestrates the pairing; the command-line client also sends UDS requests and starts flash jobs.
+Zephyr / nRF Connect SDK firmware for a BLE device on the **nRF54L15 DK**. It receives bulk data over GATT, stores uploads as files on the DK's external flash, can be provisioned with a device certificate, and can pair with another provisioned device through certificate-based OOB pairing. A MikroE MCP2518FD Click gives it a CAN / CAN FD bus, on which the device itself flashes and diagnoses ECUs with UDS over ISO-TP, triggered over BLE. A PC GUI uploads to the device, browses its files, drives UDS diagnostics and flash jobs on the ECU, provisions the device and orchestrates the pairing; a command-line client does the same without the GUI.
 
 Everything travels over **SETU** (Sliding-window, Error-checked Transfer Utility), the bulk-transfer protocol in [`_LIB/SETU`](_LIB/SETU), meant to be reused by other BLE projects. SETU was called BulkXfer before; only the name changed, and the GATT UUIDs and wire format are the same (SETU v2 = BulkXfer protocol version 2).
 
@@ -18,7 +18,7 @@ Everything travels over **SETU** (Sliding-window, Error-checked Transfer Utility
 - **CAN / CAN FD (`_ASW/_CAN`)**: an MCP2518FD Click on SPI, driven by Zephyr's `microchip,mcp251xfd` driver. The `CanIf` module owns the controller. It starts in CAN FD mode at 500 kbit/s nominal and 2 Mbit/s data, and changes mode and bitrates at runtime. It lets other modules send frames and receive filtered frames, reports error states and bus-off to listeners, and logs received traffic on the serial terminal. UDS sits on top of it.
 - **UDS client (`_LIB/UdsClient`)**: the tester side of UDS (ISO 14229) on Zephyr's ISO-TP, which Zephyr provides without UDS: requests matched to their responses, NRC 0x78 / P2*, NRC 0x21 retries, the ECU's session timing, TesterPresent, and the services ECU programming needs.
 - **SETU library (`_LIB/SETU`)**: the transfer protocol itself. The firmware runs both roles: the Server receives uploads, certificates and a peer's pairing data, and the Client sends the CSR to the PC and its own pairing data to the peer. The roles move between live links (`gi_SETUS_Rebind()`, `gi_SETUC_Detach()`).
-- **PC GUI** ([`_TOOLS/BleHostGUI`](_TOOLS/BleHostGUI/README.md)): a navigation rail with Device (scan, connect, read CAPS), Hex upload (optionally stored as a file), Files (the UART harness's command line and buttons, a listing, read data, download), Provisioning (the PC is the CA), Pairing (choose two devices and their roles, follow both live), Log and a switchable BLE traffic monitor. It hosts the PC's own SETU service so that the device can send its CSR. The command-line client `setu_client.py` does the same uploads, file commands, provisioning and pairing without the GUI.
+- **PC GUI** ([`_TOOLS/BleHostGUI`](_TOOLS/BleHostGUI/README.md)): a navigation rail with Device (scan, connect, read CAPS), Hex upload (optionally stored as a file), Files (the UART harness's command line and buttons, a listing, read data, download), ECU (the target and flash sequence from an editable JSON profile, raw UDS requests with NRCs named, SecurityAccess, a flash job on a stored upload followed step by step), Provisioning (the PC is the CA), Pairing (choose two devices and their roles, follow both live), Log and a switchable BLE traffic monitor. It hosts the PC's own SETU service so that the device can send its CSR. The command-line client `setu_client.py` does the same uploads, file commands, UDS, provisioning and pairing without the GUI.
 - **ECU simulator** ([`_TOOLS/EcuSim`](_TOOLS/EcuSim/README.md)): a UDS server over ISO-TP on a PC with a USB-CAN adapter (python-can, can-isotp), the ECU of the bench: it answers the programming sequence, writes the image it received, and injects faults.
 - **Memory report** ([`_TOOLS/MemReport`](_TOOLS/MemReport/README.md)): every firmware build prints FLASH and RAM use per module of `_ASW` and `_LIB` below the linker's summary, read from the map file.
 
@@ -82,7 +82,7 @@ Wiring, configuration, the API contract, limitations and the road to UDS flashin
 - BLE messages `0x50`–`0x58`: TARGET, DIAG_REQ / DIAG_RSP (responses in 236-byte parts), UNLOCK, FLASH (file name + 34 bytes of sequence parameters) answered by RESULT, then STATUS until DONE / FAILED / ABORTED, ABORT, STATUS_REQ.
 - One job at a time on the device's UDS thread. A flash job reads its file twice (check, then send), locks the CAN bus, turns the traffic log off, stops on bus-off or ABORT, and leaves no session alive after a failure. File commands and hex uploads answer BUSY meanwhile.
 - Seed→key on the device: BENCH_XOR for the bench, OEM algorithms from a git-ignored `_ASW/_UDS/oem/` folder.
-- `setu_client.py` reads the target and sequence of an ECU from a JSON profile (`_TOOLS/EcuSim/profiles/sim.json`). Like the file commands, UDS over BLE is unauthenticated: `CONFIG_UDS_CMD=n` for production.
+- The GUI's ECU page and `setu_client.py` read the target and sequence of an ECU from a JSON profile (`_TOOLS/EcuSim/profiles/sim.json`); the page also edits and saves them. A flash job goes on without the PC; the page follows it again when it reconnects. Like the file commands, UDS over BLE is unauthenticated: `CONFIG_UDS_CMD=n` for production.
 
 The contract is in [_DOC/UDS/PROTOCOL.md](_DOC/UDS/PROTOCOL.md); the sequence, the parameters, seed→key, profiles, the bench setup and the limitations are in [_DOC/UDS/README.md](_DOC/UDS/README.md); the client library in [_DOC/UdsClient/README.md](_DOC/UdsClient/README.md).
 
@@ -96,7 +96,7 @@ The contract is in [_DOC/UDS/PROTOCOL.md](_DOC/UDS/PROTOCOL.md); the sequence, t
 | [`_LIB/SETU/`](_LIB/SETU) | SETU, the bulk-transfer library (Server and Client roles) |
 | [`_LIB/FileSysManager/`](_LIB/FileSysManager) | FAT file system on the external flash: mount, one thread, a state machine, results per command |
 | [`_LIB/UdsClient/`](_LIB/UdsClient) | UDS client (ISO 14229, tester side) and its transport on Zephyr's ISO-TP |
-| [`_TOOLS/BleHostGUI/`](_TOOLS/BleHostGUI) | PC GUI (Tkinter + `bleak`, flat light/dark theme): Device, Hex upload, Files, Provisioning, Pairing, Log and Traffic pages; the PC's GATT server and CA; the pairing orchestrator; the command-line client |
+| [`_TOOLS/BleHostGUI/`](_TOOLS/BleHostGUI) | PC GUI (Tkinter + `bleak`, flat light/dark theme): Device, Hex upload, Files, ECU, Provisioning, Pairing, Log and Traffic pages; the PC's GATT server and CA; the pairing orchestrator; the command-line client |
 | [`_TOOLS/EcuSim/`](_TOOLS/EcuSim) | UDS ECU simulator for the bench (python-can, can-isotp) and the ECU profiles |
 | [`_TOOLS/MemReport/`](_TOOLS/MemReport) | Build-time script that splits the linker's FLASH/RAM figures by module of `_ASW` and `_LIB` |
 | [`_TEST/`](_TEST) | Host tests of the libraries, the application modules and the PC tools, with a merged test report |
@@ -149,6 +149,8 @@ python _TOOLS/BleHostGUI/setu_client.py uds target --profile _TOOLS/EcuSim/profi
 python _TOOLS/BleHostGUI/setu_client.py uds req 22F190 --name "ProjectHanuman"            # unlock, status, abort
 python _TOOLS/BleHostGUI/setu_client.py flash APP1.BIN --profile _TOOLS/EcuSim/profiles/sim.json --name "ProjectHanuman"
 ```
+
+To flash an ECU from the GUI: store the image with Hex Upload (**Store as** `APP1.BIN`), then on the ECU page **Load…** a profile (or fill in the form), **Apply target**, and on its Flash view **Refresh**, choose the file and **Flash**. The Diagnostics view sends raw requests (`22 F1 90`) and unlocks.
 
 Pairing needs two DKs provisioned by the same CA (a device certified by another CA is refused). In the GUI, disconnect the Device page first: the Pairing page makes its own link to each device. Two devices already paired with each other are not paired again until one of them is unpaired. Once paired, the PC can disconnect: the two boards reconnect to each other after every reset or lost link, and blink LED0 while connected.
 

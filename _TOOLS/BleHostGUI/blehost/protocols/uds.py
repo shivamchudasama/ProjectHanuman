@@ -16,11 +16,14 @@ what to do, with SETU short messages on the host link:
 
 Numbers are little-endian. UdsSession runs them on a SETUClient (anything with
 send_short and short_q). load_profile() reads a JSON profile (target + flash
-parameters), see _TOOLS/EcuSim/profiles/sim.json and _DOC/UDS/README.md.
+parameters), save_profile() writes one, see _TOOLS/EcuSim/profiles/sim.json and
+_DOC/UDS/README.md. NRC_NAMES / describe_response() name the ECU's negative
+responses.
 """
 
 import asyncio
 import json
+import re
 import struct
 import time
 from dataclasses import dataclass
@@ -61,9 +64,43 @@ TIMEOUT_DIAG = 30.0                                   # P2* after NRC 0x78, seve
 TIMEOUT_UNLOCK = 30.0
 STATUS_SILENCE = 10.0                                 # flash: ask for the status after this
 
+FILE_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,32}")    # a FLASH file name (PROTOCOL.md, FLASH)
+
+# ISO 14229-1 negative response codes
+NRC_NAMES = {
+    0x10: "generalReject", 0x11: "serviceNotSupported", 0x12: "subFunctionNotSupported",
+    0x13: "incorrectMessageLengthOrInvalidFormat", 0x14: "responseTooLong", 0x21: "busyRepeatRequest",
+    0x22: "conditionsNotCorrect", 0x24: "requestSequenceError", 0x25: "noResponseFromSubnetComponent",
+    0x26: "failurePreventsExecutionOfRequestedAction", 0x31: "requestOutOfRange", 0x33: "securityAccessDenied",
+    0x35: "invalidKey", 0x36: "exceededNumberOfAttempts", 0x37: "requiredTimeDelayNotExpired",
+    0x70: "uploadDownloadNotAccepted", 0x71: "transferDataSuspended", 0x72: "generalProgrammingFailure",
+    0x73: "wrongBlockSequenceCounter", 0x78: "requestCorrectlyReceivedResponsePending",
+    0x7E: "subFunctionNotSupportedInActiveSession", 0x7F: "serviceNotSupportedInActiveSession",
+    0x81: "rpmTooHigh", 0x82: "rpmTooLow", 0x83: "engineIsRunning", 0x84: "engineIsNotRunning",
+    0x85: "engineRunTimeTooLow", 0x86: "temperatureTooHigh", 0x87: "temperatureTooLow",
+    0x88: "vehicleSpeedTooHigh", 0x89: "vehicleSpeedTooLow", 0x8A: "throttleTooHigh", 0x8B: "throttleTooLow",
+    0x8C: "transmissionRangeNotInNeutral", 0x8D: "transmissionRangeNotInGear", 0x8F: "brakeSwitchNotClosed",
+    0x90: "shifterLeverNotInPark", 0x91: "torqueConverterClutchLocked", 0x92: "voltageTooHigh",
+    0x93: "voltageTooLow",
+}
+
 
 def status_name(st: int) -> str:
     return STATUS.get(st, f"0x{st:02x}")
+
+
+def nrc_name(nrc: int) -> str:
+    return NRC_NAMES.get(nrc, "ISOSAEReserved" if nrc < 0xF0 else "vehicleManufacturerSpecific")
+
+
+def describe_response(rsp: bytes) -> str:
+    """An ECU response as hex, a negative one with its NRC named."""
+    if not rsp:
+        return "(no response)"
+    text = bytes(rsp).hex(" ")
+    if len(rsp) >= 3 and rsp[0] == 0x7F:
+        text += f"  NRC 0x{rsp[2]:02x} {nrc_name(rsp[2])}"
+    return text
 
 
 class UdsError(Exception):
@@ -303,6 +340,55 @@ def load_profile(source) -> tuple:
     return target, p
 
 
+def _hex(v: int, width: int = 2) -> str:
+    return f"0x{v:0{width}X}"
+
+
+def profile_to_dict(target: Target, params: FlashParams) -> dict:
+    """(Target, FlashParams) -> a profile, the inverse of load_profile(). A step's
+    section is written only when its flag is set, so the values of a step that is
+    off are not kept."""
+    f = params.flags
+    fl = {}
+    if f & FF["EXT_SESSION"]:
+        fl["extended_session"] = True
+    if f & FF["DTC_OFF"]:
+        fl["dtc_off"] = True
+    if f & FF["COMM_OFF"]:
+        fl["comm_control"] = {"control": _hex(params.comm_control), "type": _hex(params.comm_type)}
+    if f & FF["SECURITY"]:
+        algo = next((n for n, v in ALGOS.items() if v == params.key_algo), _hex(params.key_algo))
+        fl["security"] = {"level": params.security_level, "algo": algo}
+    if f & FF["FINGERPRINT"]:
+        fl["fingerprint"] = {"did": _hex(params.fingerprint_did, 4), "data": bytes(params.fingerprint).hex()}
+    if f & FF["ERASE"]:
+        fl["erase"] = {"rid": _hex(params.erase_rid, 4), "per_record": bool(f & FF["ERASE_PER_RECORD"])}
+    if f & FF["CHECK"]:
+        fl["check"] = {"rid": _hex(params.check_rid, 4), "crc": bool(f & FF["CHECK_CRC"])}
+    if f & FF["RESET"]:
+        fl["reset"] = _hex(params.reset_type)
+    fl.update(alfid=_hex(params.alfid), dfi=_hex(params.dfi), max_block=params.max_block)
+    can = {"bitrate": target.bitrate, "fd": target.fd}
+    if target.fd:
+        can.update(data_bitrate=target.data_bitrate, brs=target.brs)
+    id_width = 8 if target.extended_ids else 3
+    return {
+        "can": can,
+        "addressing": {"tx_id": _hex(target.tx_id, id_width), "rx_id": _hex(target.rx_id, id_width),
+                       "functional_id": None if target.func_id is None else _hex(target.func_id, id_width),
+                       "extended_ids": target.extended_ids, "dl": target.dl, "padding": target.padding},
+        "timing": {"p2_ms": target.p2_ms, "p2star_ms": target.p2star_ms},
+        "flash": fl,
+    }
+
+
+def save_profile(path: str, target: Target, params: FlashParams) -> None:
+    """Write a profile that load_profile() (and setu_client.py --profile) reads."""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(profile_to_dict(target, params), f, indent=2)
+        f.write("\n")
+
+
 # ---- traffic monitor ---------------------------------------------------------------
 def _target(p: bytes) -> str:
     try:
@@ -405,13 +491,14 @@ class UdsSession:
         if not r.ok:
             raise UdsError(f"TARGET: {status_name(r.status)}", r.status)
 
-    async def diag(self, request: bytes, functional: bool = False, timeout: float = TIMEOUT_DIAG) -> tuple:
+    async def diag(self, request: bytes, functional: bool = False, timeout: float = None) -> tuple:
         """Send a UDS request; -> (status, response bytes). The response is the ECU's
-        (positive, or 7F SID NRC with status NRC); empty without one."""
+        (positive, or 7F SID NRC with status NRC); empty without one. timeout:
+        None is TIMEOUT_DIAG."""
         self._drain()
         seq = self._next_seq()
         await self.setu_cli.send_short(APP_DIAG_REQ, encode_diag(seq, request, functional))
-        deadline = time.perf_counter() + timeout
+        deadline = time.perf_counter() + (TIMEOUT_DIAG if timeout is None else timeout)
         data = bytearray()
         while True:
             try:
@@ -455,6 +542,11 @@ class UdsSession:
             if t == APP_STATUS:
                 return decode_status(bytes(p))
 
+    async def request_abort(self) -> None:
+        """Send ABORT without waiting for its RESULT: for use while follow_flash()
+        reads the messages; the final STATUS (ABORTED) ends the follow."""
+        await self.setu_cli.send_short(APP_ABORT, bytes([self._next_seq()]))
+
     async def abort(self) -> None:
         seq = self._next_seq()
         await self.setu_cli.send_short(APP_ABORT, bytes([seq]))
@@ -462,35 +554,50 @@ class UdsSession:
         if not r.ok:
             raise UdsError(f"ABORT: {status_name(r.status)}", r.status)
 
-    async def flash(self, name: str, params: FlashParams, progress=None, silence: float = STATUS_SILENCE) -> Status:
+    async def flash(self, name: str, params: FlashParams, progress=None, silence: float = None) -> Status:
         """Start a flash job of /FLASH_DISK:/FW/<name> and follow it to the end.
         progress(Status) sees every STATUS. Returns the final Status; raises UdsError
-        if the job is refused or does not end DONE (the error carries the status)."""
+        if the job is refused or does not end DONE (the error carries the status).
+        silence: ask with STATUS_REQ after this many quiet seconds (None: STATUS_SILENCE)."""
+        await self.start_flash(name, params, silence)
+        return await self.follow_flash(name, progress, silence)
+
+    async def start_flash(self, name: str, params: FlashParams, timeout: float = None) -> None:
+        """Send FLASH; returns once the device accepted it, raises UdsError if refused.
+        The job's STATUS messages stay queued for follow_flash()."""
         self._drain()
         seq = self._next_seq()
         await self.setu_cli.send_short(APP_FLASH, encode_flash(seq, params, name))
+        deadline = time.perf_counter() + (STATUS_SILENCE if timeout is None else timeout)
+        while True:
+            try:
+                t, p = await self._get(deadline)
+            except (TimeoutError, asyncio.TimeoutError):
+                raise UdsError("FLASH: no answer from the device") from None
+            if t != APP_RESULT:
+                continue                                 # nothing of this job comes before its RESULT
+            try:
+                r = decode_result(bytes(p))
+            except ValueError:
+                continue
+            if r.seq == seq and r.ref == APP_FLASH:
+                if not r.ok:
+                    raise UdsError(f"FLASH: {status_name(r.status)}", r.status)
+                return
+
+    async def follow_flash(self, name: str = "", progress=None, silence: float = None) -> Status:
+        """Follow the running (or just started) job to its end: as flash(), after
+        start_flash() or for a job found running (STATUS_REQ) after a reconnect."""
+        silence = STATUS_SILENCE if silence is None else silence
         last = time.perf_counter()
-        accepted = False
         while True:
             try:
                 t, p = await asyncio.wait_for(self.setu_cli.short_q.get(), silence)
             except (TimeoutError, asyncio.TimeoutError):
-                if not accepted:
-                    raise UdsError("FLASH: no answer from the device") from None
                 # Quiet for a while (a long erase): ask
                 await self.setu_cli.send_short(APP_STATUS_REQ, bytes([self._next_seq()]))
                 if time.perf_counter() - last > 6 * silence:
                     raise UdsError("FLASH: the device stopped reporting") from None
-                continue
-            if t == APP_RESULT:
-                try:
-                    r = decode_result(bytes(p))
-                except ValueError:
-                    continue
-                if r.seq == seq and r.ref == APP_FLASH:
-                    if not r.ok:
-                        raise UdsError(f"FLASH: {status_name(r.status)}", r.status)
-                    accepted = True
                 continue
             if t != APP_STATUS:
                 continue
@@ -501,9 +608,10 @@ class UdsSession:
             last = time.perf_counter()
             if progress:
                 progress(st)
-            if accepted and not st.running and st.state != 0:
+            if not st.running and st.state != 0:
                 if st.state != 2:
-                    raise UdsError(f"flash {name}: {st.describe()}", st.status, st.last_nrc or None)
+                    label = f"flash {name}" if name else "flash"
+                    raise UdsError(f"{label}: {st.describe()}", st.status, st.last_nrc or None)
                 return st
 
 

@@ -329,3 +329,88 @@ def test_cli_uds_errors(udscli, monkeypatch, capsys):
         cli(monkeypatch, "flash", "NOPE.BIN", "--profile", SIM_PROFILE, "--name", "dev")
     cli(monkeypatch, "uds", "req", "22F1AA", "--name", "dev")
     assert "NRC: 7f 22 31" in capsys.readouterr().out
+
+
+# ---- profiles saved, NRC names, the flash split (the GUI's ECU page) -------------------
+@pytest.mark.parametrize("path", [SIM_PROFILE, SIM_FD_PROFILE])
+def test_saved_profile_loads_back_the_same(path, tmp_path):
+    target, params = uds.load_profile(path)
+    out = tmp_path / "p.json"
+    uds.save_profile(str(out), target, params)
+    assert uds.load_profile(str(out)) == (target, params)
+    saved = json.loads(out.read_text(encoding="utf-8"))
+    assert saved["addressing"]["tx_id"] == "0x7E0" and saved["flash"]["security"]["algo"] == "BENCH_XOR"
+    assert ("data_bitrate" in saved["can"]) == target.fd
+
+
+def test_profile_to_dict_writes_only_the_steps_that_run():
+    t = uds.Target(tx_id=0x18DA10F1, rx_id=0x18DAF110, func_id=0x18DB33F1, extended_ids=True)
+    p = uds.FlashParams(flags=uds.FF["SECURITY"] | uds.FF["CHECK"], key_algo=0x80, security_level=3)
+    d = uds.profile_to_dict(t, p)
+    assert d["addressing"]["functional_id"] == "0x18DB33F1"
+    assert set(d["flash"]) == {"security", "check", "alfid", "dfi", "max_block"}
+    assert d["flash"]["security"] == {"level": 3, "algo": "0x80"} and d["flash"]["check"]["crc"] is False
+    assert uds.load_profile(d) == (t, p)
+    p.comm_control = 0x01                             # COMM_OFF is off: its values are not kept
+    assert uds.load_profile(uds.profile_to_dict(t, p))[1].comm_control == 0x03
+    assert uds.profile_to_dict(uds.Target(), uds.FlashParams())["addressing"]["functional_id"] is None
+
+
+def test_describe_response_names_the_nrc():
+    assert uds.describe_response(b"") == "(no response)"
+    assert uds.describe_response(b"\x62\xf1\x90\x41") == "62 f1 90 41"
+    assert uds.describe_response(b"\x7f\x22\x31") == "7f 22 31  NRC 0x31 requestOutOfRange"
+    assert uds.nrc_name(0x78) == "requestCorrectlyReceivedResponsePending"
+    assert uds.nrc_name(0x50) == "ISOSAEReserved" and uds.nrc_name(0xF5) == "vehicleManufacturerSpecific"
+    assert uds.FILE_NAME_RE.fullmatch("APP_1.bin-2") and not uds.FILE_NAME_RE.fullmatch("a/b")
+    assert not uds.FILE_NAME_RE.fullmatch("x" * 33)
+
+
+def test_start_and_follow_flash_and_a_job_followed_later(vectors, udsdev):
+    from ecu_sim import EcuSim
+    udsdev.ecu = EcuSim(max_block=18)
+    udsdev.files["APP1.BIN"] = flash_file(vectors)
+    s = uds.UdsSession(FakeUdsSETU(udsdev))
+    target, params = uds.load_profile(SIM_PROFILE)
+    seen = []
+
+    async def go():
+        with pytest.raises(uds.UdsError, match="FLASH: NOT_READY"):
+            await s.start_flash("APP1.BIN", params)
+        await s.target(target)
+        await s.start_flash("APP1.BIN", params)
+        return await s.follow_flash("APP1.BIN", seen.append)
+    st = run(go())
+    assert st.state_name == "DONE" and seen[-1] == st and udsdev.ecu.image == flash_file(vectors)
+
+    # Followed from a STATUS_REQ only (a reconnect): the last job's final STATUS ends it
+    s2 = uds.UdsSession(FakeUdsSETU(udsdev))
+
+    async def later():
+        assert (await s2.follow_flash(silence=0.05)).state_name == "DONE"
+        udsdev.status = struct.pack("<BBBBIIBBB", 3, 9, 0, 2, 10, 30, 0x36, 0x72, uds.ST_NRC)
+        with pytest.raises(uds.UdsError, match=r"^flash: FAILED TRANSFER") as e:
+            await s2.follow_flash(silence=0.05)
+        assert e.value.nrc == 0x72
+    run(later())
+
+
+def test_follow_flash_gives_up_when_the_device_stops_reporting(udsdev):
+    setu = FakeUdsSETU(udsdev)
+    udsdev.status = struct.pack("<BBBBIIBBB", 1, 9, 0, 2, 10, 30, 0, 0, 0)     # RUNNING, for ever
+    asked = []
+
+    async def quiet(app_type, payload):
+        asked.append(app_type)
+        await asyncio.sleep(0)
+    setu.send_short = quiet
+    with pytest.raises(uds.UdsError, match="stopped reporting"):
+        run(uds.UdsSession(setu).follow_flash(silence=0.02))
+    assert set(asked) == {uds.APP_STATUS_REQ} and len(asked) >= 2, "asked while it was quiet"
+
+
+def test_request_abort_sends_abort_without_waiting(udsdev):
+    setu = FakeUdsSETU(udsdev)
+    run(uds.UdsSession(setu).request_abort())
+    assert setu.sent == [(uds.APP_ABORT, b"\x01")]
+    assert setu.short_q.qsize() == 1, "its RESULT is left to whoever reads"

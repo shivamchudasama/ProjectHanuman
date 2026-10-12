@@ -86,7 +86,10 @@ class SETUService:
 
     On connect it subscribes to CTRL. A feature that wants to transfer calls
     new_client() — the frame size is taken from the ATT MTU at that moment —
-    and notifications are routed to that client.
+    and notifications are routed to that client. A feature that follows the
+    device for a long time (a UDS flash job) takes routed_client(first, last)
+    instead: short messages of that appType range go to it, whichever client
+    another page has taken since. Routes end with the link.
     """
 
     NAME = "setu"
@@ -95,6 +98,7 @@ class SETUService:
         self.ctx = ctx
         self.available = False
         self.client = None
+        self.routes = []                 # (first appType, last appType, client)
         self.base = ctx.settings.base_uuid
         register_decoders(ctx.decoders, self.base)
         ctx.link.add_connect_hook(self._attach)
@@ -114,8 +118,14 @@ class SETUService:
     def _detach(self, _link, _reason):
         self.available = False
         self.client = None
+        self.routes = []
 
     def _on_ctrl(self, handle, data):
+        if len(data) >= 2 and data[1] <= APP_TYPE_MAX:
+            for first, last, cli in self.routes:
+                if first <= data[1] <= last:
+                    cli.on_notify(handle, data)
+                    return
         if self.client is not None:
             self.client.on_notify(handle, data)
 
@@ -131,6 +141,14 @@ class SETUService:
         self.client = setu_client.SETUClient(self.ctx.link.gatt, self.base,
                                         log=lambda t: self.ctx.log(t, "warn"))
         return self.client
+
+    def routed_client(self, first: int, last: int) -> "setu_client.SETUClient":
+        """A client that receives the short messages of appTypes first..last,
+        replacing an earlier route of the same range. Must be called on the BLE loop."""
+        self._require()
+        cli = setu_client.SETUClient(self.ctx.link.gatt, self.base, log=lambda t: self.ctx.log(t, "warn"))
+        self.routes = [r for r in self.routes if (r[0], r[1]) != (first, last)] + [(first, last, cli)]
+        return cli
 
     async def read_caps(self) -> tuple:
         """-> (protocol version, max frame, window, ATT MTU)"""
