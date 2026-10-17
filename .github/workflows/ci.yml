@@ -1,4 +1,5 @@
-# CI: host tests (C + Python), firmware build, one merged test report.
+# CI: host tests (C + Python), static analysis, fuzzing, firmware build, one
+# merged test report.
 # Runs locally the same way with _TEST/run_tests.ps1 (see _TEST/README.md).
 
 name: CI
@@ -88,6 +89,47 @@ jobs:
           name: report-python
           path: report/
 
+  # ---- Static analysis: cppcheck (_ASW, _LIB), ruff and bandit (_TOOLS) --------
+  # The same gate as run_tests.ps1 -Static (_TEST/tools/run_static.py)
+  static-analysis:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install tools
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q cppcheck
+          pip install ruff bandit
+      - name: Static analysis
+        run: python _TEST/tools/run_static.py .
+
+  # ---- Fuzzing: the code that parses bytes from outside (libFuzzer) -----------
+  # _TEST/fuzz: frames from a BLE peer (SETU receive path, file and UDS
+  # commands), ECU answers off CAN (UDS client) and stored files (flash job),
+  # under ASan + UBSan; a short run per target, as run_tests.ps1 -Fuzz
+  fuzz:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install tools
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build clang
+      - name: Build
+        run: |
+          cmake -G Ninja -S _TEST/fuzz -B build_fuzz -DCMAKE_C_COMPILER=clang
+          cmake --build build_fuzz
+      - name: Fuzz (60 s per target)
+        run: python _TEST/tools/run_fuzz.py build_fuzz 60
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: fuzz-crashes
+          path: build_fuzz/crash/
+
   # ---- Tier 3: the real firmware, in Nordic's toolchain container -------------
   # Once per external flash interface (FLASH_IF in the root CMakeLists.txt): SPI
   # (the default, flashed by the hardware jobs) and the sQSPI soft peripheral
@@ -126,6 +168,10 @@ jobs:
           west build -p -b "$BOARD" --sysbuild -d "$GITHUB_WORKSPACE/build_ci" "$GITHUB_WORKSPACE/app" \
             -- -DFLASH_IF=${{ matrix.flash_if }} 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
           test "${PIPESTATUS[0]}" -eq 0
+      # Every CONFIG_ symbol the sources test must be one this build knows
+      # (a mistyped or foreign symbol silently compiles its branch out)
+      - name: Kconfig symbols used by the sources
+        run: python3 app/_TEST/tools/check_config_symbols.py app build_ci/app/zephyr/.config
       - name: Memory usage
         run: |
           {

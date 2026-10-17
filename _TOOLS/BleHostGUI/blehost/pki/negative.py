@@ -75,6 +75,17 @@ def _flip_last(der: bytes) -> bytes:
     return der[:-1] + bytes([der[-1] ^ 0x01])
 
 
+def _other_cn(subject: x509.Name) -> x509.Name:
+    """subject with its CN's last character changed: same fields, same length."""
+    attrs = []
+    for a in subject:
+        if a.oid == NameOID.COMMON_NAME:
+            last = "0" if a.value[-1] != "0" else "1"
+            a = x509.NameAttribute(NameOID.COMMON_NAME, a.value[:-1] + last)
+        attrs.append(a)
+    return x509.Name(attrs)
+
+
 def negative_cases(ca, csr_der: bytes) -> list:
     """Cases for the device that sent csr_der, with `ca` (CertificateAuthority) as
     the good CA. Returns [Case]; the good CA itself is ca.cert_der."""
@@ -106,6 +117,10 @@ def negative_cases(ca, csr_der: bytes) -> list:
              _der(_dev_cert(ca.key, good_name,
                             x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "someone else")]),
                             dev_key)), SUBJECT_MISMATCH),
+        # Another device's subject: the same fields and length, another CN (a UUID
+        # of the same size), so only the bytes tell it apart
+        Case("dev_other_device_cn", DEV_CERT,
+             _der(_dev_cert(ca.key, good_name, _other_cn(subject), dev_key)), SUBJECT_MISMATCH),
         Case("dev_ca_flag", DEV_CERT, _der(_dev_cert(ca.key, good_name, subject, dev_key, ca_flag=True)),
              BAD_PROFILE),
         Case("dev_no_key_agreement", DEV_CERT,

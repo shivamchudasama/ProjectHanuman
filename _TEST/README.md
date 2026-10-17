@@ -7,9 +7,11 @@ Host tests for the libraries in `_LIB`, the testable application modules in `_AS
 ```powershell
 powershell -ExecutionPolicy Bypass -File _TEST\run_tests.ps1            # all tests
 powershell -ExecutionPolicy Bypass -File _TEST\run_tests.ps1 -Coverage  # + C and Python coverage
+powershell -ExecutionPolicy Bypass -File _TEST\run_tests.ps1 -Static    # + cppcheck, ruff, bandit
+powershell -ExecutionPolicy Bypass -File _TEST\run_tests.ps1 -Fuzz      # + each fuzz target, -FuzzSeconds (30)
 ```
 
-This needs a host `gcc` on PATH (MinGW-w64 or Strawberry Perl; gcc 4.4 and newer work) and Python 3.8+. CMake, CTest and Ninja are taken from PATH, or else from `C:\ncs\toolchains`. Python dependencies go into a venv in `build_test/venv`. The first configure downloads Unity and Mbed TLS 4.1.1 (both pinned by hash) and builds Mbed TLS once.
+This needs a host `gcc` on PATH (MinGW-w64 or Strawberry Perl; gcc 4.4 and newer work) and Python 3.8+. CMake, CTest and Ninja are taken from PATH, or else from `C:\ncs\toolchains`. Python dependencies go into a venv in `build_test/venv`. The first configure downloads Unity and Mbed TLS 4.1.1 (both pinned by hash) and builds Mbed TLS once. `-Static` needs cppcheck (on PATH or in `C:\Program Files\Cppcheck`; ruff and bandit go into the venv); `-Fuzz` needs clang with libFuzzer (LLVM, on PATH or in `C:\Program Files\LLVM`) and builds into `build_fuzz/`. On Windows the fuzz targets run with ASan only (the MSVC runtime has no UBSan for them); CI runs them with ASan + UBSan.
 
 A local pass is not the whole check. gcc 4.4 has no sanitizers and is 32-bit, so out-of-bounds reads and printf formats that are wrong only on 64-bit hosts (`size_t`, `ssize_t`) show up only in CI's `host-tests` job (GCC 13, ASan + UBSan, `-Werror`). When it fails there, the sanitizer report is in the job log and in the `report-c` artifact (`junit/<test>.xml`, as the failing test's output).
 
@@ -26,8 +28,10 @@ The output goes to `build_test/report/`:
 
 | Tier | Local | CI job | What it tests |
 |---|---|---|---|
-| C unit tests (CTest + [Unity](https://github.com/ThrowTheSwitch/Unity)) | yes | `host-tests`, with ASan + UBSan | `_LIB/SETU`, `_LIB/GATT_CB`, `_LIB/FileSysManager` (with and without the write buffer, on an in-memory volume), `_ASW/_DATA_STORE` (including uploads stored as files), `_ASW/_FS_CMD` (file commands, with and without `CONFIG_FS_CMD`), `_ASW/_SETU_SVC` (router), `_ASW/_PROV` (flow and wipe button), `_ASW/_PAIR` (pairing flow, the bond record and the bonded reconnection with its LED, end to end, and the signed OOB data on the real TF-PSA-Crypto), `_ASW/_DEVICE_CERT` (storage, and X.509 verification on the real Mbed TLS), `_ASW/_CSR` (key and CSR life cycle, DER encoder), `_ASW/_CAN` (the CAN interface against a scripted controller, as a CAN FD and a CAN 2.0 build), `_LIB/UdsClient` (against a scripted transport; its ISO-TP transport against fakes of Zephyr's ISO-TP), `_ASW/_UDS` (seed->key with and without OEM algorithms, the job engine with the real client and File System Manager against a C ECU and the golden UDS conversation, the BLE messages on the real router), `_ASW/_GENERIX`, header hygiene |
+| C unit tests (CTest + [Unity](https://github.com/ThrowTheSwitch/Unity)) | yes | `host-tests`, with ASan + UBSan | `_LIB/SETU`, `_LIB/GATT_CB`, `_LIB/FileSysManager` (with and without the write buffer, on an in-memory volume), `_ASW/_DATA_STORE` (including uploads stored as files), `_ASW/_FS_CMD` (file commands, with and without `CONFIG_FS_CMD`), `_ASW/_SETU_SVC` (router), `_ASW/_PROV` (flow and wipe button), `_ASW/_PAIR` (pairing flow, the bond record and the bonded reconnection with its LED, end to end, and the signed OOB data on the real TF-PSA-Crypto), `_ASW/_DEVICE_CERT` (storage, and X.509 verification on the real Mbed TLS), `_ASW/_CSR` (key and CSR life cycle with the firmware's storage Kconfig, DER encoder), `_ASW/_CAN` (the CAN interface against a scripted controller, as a CAN FD and a CAN 2.0 build), `_LIB/UdsClient` (against a scripted transport; its ISO-TP transport against fakes of Zephyr's ISO-TP), `_ASW/_UDS` (seed->key with and without OEM algorithms, the job engine with the real client and File System Manager against a C ECU and the golden UDS conversation, the BLE messages on the real router), `_ASW/_WDT` (the watchdog: reset cause, task watchdog and its channel, the feed; with and without the hardware watchdog node), `_ASW/_GENERIX`, header hygiene |
 | Python tests (pytest) | yes | `python-tests`, under `xvfb-run` | `setu_client.py` (protocol and command line), `setu_receiver.py`, `blehost/protocols`, `blehost/pki`, `blehost/core/gatt_server.py` (fake backend, and the WinRT backend against fake `winrt` modules), `blehost/core/decoders.py`, `blehost/core/ble_link.py` (the main link and a feature's own labelled links, fake `bleak`), `blehost/protocols/pairing.py` (codecs against `wire.json`, the orchestrator against simulated devices: success, refusals (including two devices paired with each other already), failures, time limit, cancellation, stale statuses, lost notifications), `blehost/protocols/filesystem.py` (the file commands' codecs against `wire.json`, the session, the UART harness's line parser, the `fs` command line and shell, against a scripted device), `blehost/features/provisioning.py`, `blehost/features/pairing.py` and `blehost/features/file_system.py` (each page's logic, and building the real Tk page), the Hex Upload page's Store as (BEGIN / COMMIT, size and CRC check), `blehost/ui` (the flat light/dark theme and its drawn check box and switch, one-pass switching, the display widgets and that they do not redraw unchanged state, the More menu, the hex upload's coalesced progress and segment count, the status mappings the pages colour by, the main window: pages built on first show, one mapped at a time, the status line, rail badges, traffic capture, and the window without Pillow or an icon font), `blehost/ui/icons.py` (the Pillow-drawn shapes and indicators, icon glyphs with and without a badge, the window icon, and their fallbacks without Pillow or an icon font), `_TOOLS/MemReport/mem_report.py` (map parsing on a synthetic map with each shape of `zephyr.map`, attribution to modules, load addresses, merged-string pools, gaps, name clashes, the table and the command line), `blehost/protocols/uds.py` and `setu_client.py uds` / `flash` (codecs against `wire.json`, the profiles, the session and command line against a fake device running the sequence on the simulator), `_TOOLS/EcuSim/ecu_sim.py` (the golden UDS conversation replayed, every service and fault, ISO-TP on python-can's virtual bus, classic and CAN FD) |
+| Static analysis (`tools/run_static.py`) | `-Static` | `static-analysis` | cppcheck (warning, performance, portability) over `_ASW` and `_LIB` with the project's include paths; ruff (pyflakes rules) and bandit (medium and up) over `_TOOLS`. Any finding fails |
+| Fuzzing (`fuzz/`, libFuzzer) | `-Fuzz` | `fuzz`, 60 s per target, ASan + UBSan | The code that parses bytes from outside: `fuzz_setu_rx` (frames a BLE peer writes, through the SETU Server, router, data store and File System Manager; the scripted peer checks every frame the device sends back), `fuzz_fscmd` (file commands), `fuzz_uds_cmd` (UDS messages and the ECU answers handed back), `fuzz_uds_client` (ECU answers off CAN, with the client's length and return contracts checked), `fuzz_uds_job` (a flash job on a cut or corrupted stored file with fuzzed parameters; afterwards the bus, log, file and engine must be back, and a DONE job must have sent exactly the file's records). A crash input is the `fuzz-crashes` artifact |
 | Firmware build | no (VS Code) | `firmware-build`, in `ghcr.io/nrfconnect/sdk-nrf-toolchain`, once per flash interface (`FLASH_IF=spi`, `sqspi`) | The whole app for `nrf54l15dk/nrf54l15/cpuapp`. The ROM/RAM use, and the same per module (`mem_report.txt`), go in the job summary. The SPI image is the `firmware` artifact the hardware jobs flash |
 | Hardware in the loop | no | `hil-tests` (placeholder, manual) | Flash, upload `AA00000100.hex` over BLE, upload it again stored as a file (`hex --store`), `fs ls`, read it back with `fs get` before and after a reset and compare it with the hex file's records, provision the board with `--negative` (the device's certificate verification), check the certificate with `openssl verify`, check that a second provisioning is refused, `deprovision` and provision again |
 | Pairing on hardware | no | `hil-pair-tests` (placeholder, manual, two DKs) | Flash and provision both DKs with one CA, `pair` (both must end PAIRED), check that the bond survives a reset (the reconnection and the blinking LED0 are checked by eye), then provision one DK with another CA and check that pairing is refused (PEER_CERT) |
@@ -58,12 +62,14 @@ shim/                  single-threaded stand-in for the Zephyr kernel, logging a
                          ff.h: FatFs's FATFS type
                          and the BT host APIs pairing uses (addresses, advertising, scanning,
                          connections, SMP/OOB, bonds, GATT write): declarations only
+  zephyr/task_wdt/task_wdt.h, zephyr/drivers/hwinfo.h  the task watchdog; device ID and reset
+                         cause (Zephyr's RESET_* flags): declarations only
   zephyr/settings/, hw_unique_key.h, dk_buttons_and_leds.h (buttons and LEDs)
                          declarations only (tests define the functions); settings has
                          init, save, delete and the static handler macro
-  zephyr/device.h, devicetree.h  struct device, device_is_ready() (declared), DT_CHOSEN() and
-                         DEVICE_DT_GET(): DEVICE_DT_GET(DT_CHOSEN(x)) is gst_simDev_x, which the
-                         test defines
+  zephyr/device.h, devicetree.h  struct device, device_is_ready() (declared), DT_CHOSEN(),
+                         DT_ALIAS() and DEVICE_DT_GET(): DEVICE_DT_GET(DT_CHOSEN(x)) is gst_simDev_x,
+                         which the test defines; DT_NODE_HAS_STATUS_OKAY(x) is its SHIM_DT_OKAY_x
   zephyr/canbus/isotp.h  Zephyr's ISO-TP addresses, flags, error codes and contexts (recv_buf: a
                          message partly read); the API declared only
   zephyr/drivers/can.h   Zephyr's CAN types, flags, modes, states and DLC helpers; the controller
@@ -118,8 +124,15 @@ unit/CSR/              test_der.c: the CSR DER encoder against the real-signatur
                        test_csr_generator.c: key and CSR life cycle (init, first boot, reuse,
                        repair, failures, wipe); its init failures run as four more CTest
                        entries (--init=...), since the init result is kept per process
+unit/Wdt/              test_wdt.c: the watchdog (built as wdt, alias watchdog0 enabled, and
+                       wdt_nohw, without the node)
 unit/Helpers/          test_helpers.c
-python/                pytest suite; conftest.py has a fake GATT link + scripted server and a shared Tk root
+python/                pytest suite; conftest.py has a fake GATT link + scripted server and a shared Tk root;
+                       test_uds_udsoncan.py checks the uds_flash conversation with python-udsoncan;
+                       test_check_config_symbols.py the Kconfig symbol check
+fuzz/                  libFuzzer targets (own CMake project, clang): fuzz_setu_rx.c, fuzz_fscmd.c,
+                       fuzz_uds_cmd.c, fuzz_uds_client.c, fuzz_uds_job.c; most #include a unit test
+                       with its main() renamed, to reuse its stubs; fuzz_win.h (ssize_t on Windows)
 vectors/wire.json      golden wire vectors, checked by BOTH the C and the Python tests
 known_header_issues.txt  headers with a known, reported problem (see below)
 tools/                 gen_vectors.py, run_unity.py (Unity -> JUnit), check_headers.py, report.py,
@@ -128,7 +141,11 @@ tools/                 gen_vectors.py, run_unity.py (Unity -> JUnit), check_head
                        gen_fs_vector.py (writes the "hex_file" and "file_system" sections),
                        gen_uds_vector.py (writes "uds_cmd", "uds_key" and "uds_flash"),
                        wire_section.py (replaces one section of wire.json in place),
-                       gen_cert_vectors.py (certificates for devicecert_verify, every fresh build)
+                       gen_cert_vectors.py (certificates for devicecert_verify, every fresh build),
+                       gen_fuzz_corpus.py (fuzz seeds from wire.json), run_fuzz.py (runs every fuzz
+                       target), run_static.py (the static analysis gate) with cppcheck_zephyr.h,
+                       check_config_symbols.py (CI, after each firmware build: every CONFIG_
+                       symbol an #if in _ASW/_LIB tests is known to the build)
 ```
 
 ## Ideas the tests are built on
@@ -141,6 +158,7 @@ tools/                 gen_vectors.py, run_unity.py (Unity -> JUnit), check_head
 - **Signed by one library, verified by the other.** `wire.json` `pairing.oob` is an OOB frame signed by Python's `cryptography` (`tools/gen_pair_vector.py`). `pair_oob` verifies it with the device code on the real TF-PSA-Crypto, and signs and verifies its own frames; the Python tests check the same frame and the CONTROL and STATUS vectors the C tests use. Rerun the tool (it replaces only the `pairing` section) after a change to the pairing wire format.
 - **The device verifies what the PC sends.** `tools/gen_cert_vectors.py` runs on each fresh build: it makes a device key and CSR, has the PC tool's CA (`blehost/pki/authority.py`) issue the device certificate, and takes every certificate the device must reject, with its expected RESULT status, from `blehost/pki/negative.py`. `devicecert_verify` imports that key as the persistent device key and runs the device's verification on all of them, so a change on either side that breaks the profile fails the host tests, not only a hardware run.
 - **The real library where it matters.** Certificate parsing and verification are the security boundary, so their test links Mbed TLS itself. `shim/tfpsa/tf_psa_crypto_host_config.h` removes only what a host cannot provide (AES-NI and asm, the OS entropy source, the file ITS, calendar time, the OS zeroize call). Under ASan/LSan in CI, a certificate context left unfreed on any path fails the test.
+- **A second opinion from outside the repo.** The PC client, the ECU simulator, the fakes and `wire.json` come from the same hands as the firmware, so a misreading of a standard can sit on both sides and pass. Where an outside implementation exists, it checks the shared vectors too: `cryptography` parses and verifies the device's CSR, python-udsoncan encodes the device's whole flash conversation (`test_uds_udsoncan.py`). Such a comparison also shows where a documented convention differs from what standard tools compute, as the CSR's SKI does (SHA-1 of X‖Y, not RFC 5280's method 1; audit finding F8).
 - **Private state stays reachable.** C tests `#include` the `.c` under test, as `test_engine.c` always did, so static state can be driven and inspected without changing production code.
 
 ## Known bugs
@@ -151,7 +169,7 @@ A test that documents a defect that is still open does not turn the pipeline red
 - **Headers:** an entry in `known_header_issues.txt`, with the same strict behaviour.
 - **C (Unity):** `TEST_IGNORE_MESSAGE("KNOWN BUG: …")`, after a check that fails the test once the bug is fixed (strict, as above).
 
-The report lists all of them under *Known bugs*.
+The report lists all of them under *Known bugs*. Open now: `csr_der` `test_ShortIntegerKeepsItsLowBytes` (`DER.c` writes a short INTEGER's high-order bytes). The audit that found it is in [`_DOC/Audit/FINDINGS.md`](../_DOC/Audit/FINDINGS.md).
 
 ## Adding tests
 

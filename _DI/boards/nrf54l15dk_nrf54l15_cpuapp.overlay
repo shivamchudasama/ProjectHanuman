@@ -9,6 +9,14 @@
 };
 
 /*
+ * Hardware watchdog (alias watchdog0), the task watchdog's fallback
+ * (_ASW/_WDT): disabled in the SoC devicetree.
+ */
+&wdt31 {
+	status = "okay";
+};
+
+/*
  * CAN / CAN FD: a MikroE MCP2518FD Click (MCP2518FD controller, ATA6563
  * transceiver, 40 MHz oscillator) wired to SPIM21 on port 1. Zephyr's
  * mikroe_mcp2518fd_click shield needs a mikroBUS header, which the DK lacks,

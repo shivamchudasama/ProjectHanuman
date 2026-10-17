@@ -68,9 +68,12 @@
  * @brief         Stack size of the provisioning thread. mbedTLS X.509 parsing,
  *                ECDSA verification, ITS writes (an entry-sized buffer on the
  *                stack) and, on a wipe, key generation and the CSR build run on
- *                it; main() needs CONFIG_MAIN_STACK_SIZE=8192 for the same work.
+ *                it; main() needs CONFIG_MAIN_STACK_SIZE for the same work. The
+ *                deepest static path (wipe -> CSR build -> PSA sign -> secure
+ *                storage) takes about 7.5 KiB before interrupt frames and calls
+ *                through function pointers; 10 KiB leaves a margin (audit F4).
  */
-#define PROV_STACK_SIZE                      (8192)
+#define PROV_STACK_SIZE                      (10240)
 
 /**
  * @def           PROV_PRIORITY

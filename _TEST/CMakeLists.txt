@@ -322,18 +322,30 @@ add_unit_test(csr_der
    SOURCES unit/CSR/test_der.c
    INCLUDES ${ASW_DIR}/_CSR ${PSA_STUB_DIR})
 
-# Key and CSR life cycle (CSR_Generator.c): PSA, ITS, HUK, settings, hardware
+# Key and CSR life cycle (CSR_Generator.c), with the firmware's storage Kconfig: PSA, ITS, HUK, settings, hardware
 # ID and the DER encoder stubbed. Its init result is kept for the life of the
 # process, so each init failure runs as its own CTest entry.
 add_unit_test(csr_generator
    SOURCES unit/CSR/test_csr_generator.c
    INCLUDES ${ASW_DIR}/_CSR ${PSA_STUB_DIR})
-foreach(MODE huk-present huk-fail settings-fail crypto-fail)
+foreach(MODE huk-present huk-missing settings-fail crypto-fail)
    add_test(NAME csr_generator_init_${MODE}
       COMMAND Python3::Interpreter ${TOOLS_DIR}/run_unity.py
          ${REPORT_DIR}/junit/csr_generator_init_${MODE}.xml csr_generator_init_${MODE}
          $<TARGET_FILE:csr_generator> --init=${MODE})
 endforeach()
+
+# ---- _ASW/_WDT ---------------------------------------------------------------
+# The application watchdog: reset cause, task watchdog and its channel, the
+# feed; with the hardware watchdog node (the firmware's overlay) and without
+set(WDT_INCLUDES ${ASW_DIR}/_WDT)
+add_unit_test(wdt
+   SOURCES unit/Wdt/test_wdt.c
+   INCLUDES ${WDT_INCLUDES})
+add_unit_test(wdt_nohw
+   SOURCES unit/Wdt/test_wdt.c
+   INCLUDES ${WDT_INCLUDES}
+   DEFINES SHIM_DT_OKAY_watchdog0=0)
 
 # ---- _ASW/_GENERIX -----------------------------------------------------------
 add_unit_test(helpers
@@ -360,7 +372,7 @@ set(CHECKED_HEADERS
    ${ASW_DIR}/_DEVICE_CERT/DeviceCert_Types.h ${ASW_DIR}/_DEVICE_CERT/DeviceCert_Config.h
    ${ASW_DIR}/_CSR/CSR_Generator.h ${ASW_DIR}/_CSR/CSR_Generator_Types.h
    ${ASW_DIR}/_CSR/CSR_Generator_Config.h ${ASW_DIR}/_CSR/DER.h
-   ${ASW_DIR}/_GENERIX/Helpers.h)
+   ${ASW_DIR}/_GENERIX/Helpers.h ${ASW_DIR}/_WDT/Wdt.h)
 set(HDR_INCLUDES "")
 foreach(DIR ${SHIM_DIR} ${SETU_INCLUDES} ${GATT_CB_DIR} ${FSCMD_INCLUDES} ${PROV_INCLUDES} ${ASW_DIR}/_GENERIX
       ${UDS_LIB_DIR} ${ASW_DIR}/_CAN)

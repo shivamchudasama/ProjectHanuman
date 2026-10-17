@@ -95,9 +95,10 @@
  * @def           PAIR_STACK_SIZE
  * @brief         Stack size of the pairing thread: mbedTLS X.509 parsing and
  *                ECDSA verification of the peer certificate run on it, as on
- *                the provisioning thread.
+ *                the provisioning thread. Its deepest static path (X.509 parse
+ *                -> key import -> secure storage) takes about 6.3 KiB (audit F4).
  */
-#define PAIR_STACK_SIZE                      (8192)
+#define PAIR_STACK_SIZE                      (10240)
 
 /**
  * @def           PAIR_PRIORITY

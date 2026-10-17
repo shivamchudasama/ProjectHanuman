@@ -21,6 +21,9 @@
 #include "ProvButton.h"
 #include "Pair.h"
 #include "SETURouter.h"
+#if defined(CONFIG_APP_WDT)
+#include "Wdt.h"
+#endif // CONFIG_APP_WDT
 #if defined(CONFIG_UDS)
 #include "UdsJob.h"
 #include "UdsCmd.h"
@@ -51,7 +54,7 @@
 /******************************************************************************/
 /**
  * @public        main
- * @brief         Starts the File System Manager, initializes the SETU users (hex
+ * @brief         Starts the watchdog, the File System Manager, initializes the SETU users (hex
  *                upload, file commands, provisioning, pairing, UDS), the CAN
  *                interface, the SETU Server and Client, the BLE stack and starts
  *                advertising.
@@ -59,6 +62,11 @@
  */
 int main(void)
 {
+#if defined(CONFIG_APP_WDT)
+   // First: log why the device reset, and supervise the rest of the boot
+   (void)gi_Wdt_Init();
+#endif // CONFIG_APP_WDT
+
    // Mount the FAT volume on the external flash (on its own thread; commands
    // submitted before it is mounted wait in its queue)
    (void)gi_FSMGR_Start();

@@ -288,6 +288,40 @@ endif # UDS
 
 endmenu
 
+menu "Watchdog"
+
+config APP_WDT
+	bool "Application watchdog (_ASW/_WDT)"
+	default y
+	depends on TASK_WDT && HWINFO
+	help
+	  Logs the reset cause at boot, starts the task watchdog with the
+	  hardware watchdog (alias watchdog0) as fallback, and feeds one
+	  channel from a thread at the lowest application priority: a hang,
+	  interrupts held off or a starved CPU for longer than
+	  APP_WDT_TIMEOUT_MS reset the device.
+
+if APP_WDT
+
+config APP_WDT_TIMEOUT_MS
+	int "Watchdog timeout (ms)"
+	default 8000
+	range 1000 60000
+	help
+	  Time without a feed before the device resets. Long enough for the
+	  slowest legitimate CPU-bound step (key generation, the CSR, an X.509
+	  verification); the file system and UDS waits block and let the
+	  supervisor run.
+
+config APP_WDT_FEED_MS
+	int "Supervisor feed period (ms)"
+	default 1000
+	range 100 30000
+
+endif # APP_WDT
+
+endmenu
+
 menu "Device certificate subject (CSR)"
 
 config CSR_SUBJ_C

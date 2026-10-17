@@ -37,6 +37,13 @@
  */
 #define CSR_PERSISTED_OUTPUT_LEN(t_csrLen)   (CSR_PERSISTED_OUTPUT_BASE_LEN + (size_t)(t_csrLen))
 
+/* Secure storage derives its AEAD key from the HUK; nothing in this module
+   writes one, so NCS must write it during psa_crypto_init() */
+#if defined(CONFIG_SECURE_STORAGE_ITS_TRANSFORM_AEAD_KEY_PROVIDER_HUK_LIBRARY) && \
+   !defined(CONFIG_HW_UNIQUE_KEY_WRITE_ON_CRYPTO_INIT)
+#error "Secure storage uses the HUK library: set CONFIG_HW_UNIQUE_KEY_WRITE_ON_CRYPTO_INIT=y"
+#endif
+
 /******************************************************************************/
 /*                                                                            */
 /*                                   ENUMS                                    */
@@ -93,9 +100,6 @@
 /*                       PRIVATE FUNCTION DECLARATIONS                        */
 /*                                                                            */
 /******************************************************************************/
-#if defined(CONFIG_TRUSTED_STORAGE_BACKEND_AEAD_KEY_DERIVE_FROM_HUK)
-static int si_ProvisionTrustedStorageHukIfNeeded(void);
-#endif // CONFIG_TRUSTED_STORAGE_BACKEND_AEAD_KEY_DERIVE_FROM_HUK
 static int si_InitPersistentKeyStorage(void);
 static psa_status_t st_GenerateDeviceKey(psa_key_id_t *tpt_signingKey);
 static psa_storage_uid_t st_GetCSRStorageUID(void);
@@ -219,54 +223,20 @@ static SubjectNameField_T sstar_subjectNameFields[] =
 /*                        PRIVATE FUNCTION DEFINITIONS                        */
 /*                                                                            */
 /******************************************************************************/
-#if defined(CONFIG_TRUSTED_STORAGE_BACKEND_AEAD_KEY_DERIVE_FROM_HUK)
-/**
- * @private       si_ProvisionTrustedStorageHukIfNeeded
- * @brief         Provision the HW Unique Key (HUK) used by trusted storage if
- *                it is not already present.
- * @return        0 in case of no error.
- */
-static int si_ProvisionTrustedStorageHukIfNeeded(void)
-{
-   int i_status = 0;
-
-   if (!hw_unique_key_are_any_written())
-   {
-      APP_LOG_WRN("Trusted storage HUK is not provisioned. Writing random HUK");
-
-      i_status = hw_unique_key_write_random();
-      if (i_status != HW_UNIQUE_KEY_SUCCESS)
-      {
-         APP_LOG_ERR("Failed to provision trusted storage HUK: %d", i_status);
-      }
-      else
-      {
-         APP_LOG_INF("Trusted storage HUK provisioned successfully");
-      }
-   }
-
-   return i_status;
-}
-#endif // CONFIG_TRUSTED_STORAGE_BACKEND_AEAD_KEY_DERIVE_FROM_HUK
-
 /**
  * @private       si_InitPersistentKeyStorage
- * @brief         Initialize the storage backend used by persistent PSA keys.
+ * @brief         Initialize the settings backend that Zephyr's secure storage
+ *                (the PSA ITS) keeps its entries in. Secure storage also does
+ *                this from its own SYS_INIT; settings_subsys_init() returns at
+ *                once when it already ran, and doing it here makes a failure
+ *                visible before the first key is used.
  * @return        0 in case of no error.
  */
 static int si_InitPersistentKeyStorage(void)
 {
    int i_status = 0;
 
-#if defined(CONFIG_TRUSTED_STORAGE_BACKEND_AEAD_KEY_DERIVE_FROM_HUK)
-   i_status = si_ProvisionTrustedStorageHukIfNeeded();
-   if (i_status != 0)
-   {
-      return i_status;
-   }
-#endif // CONFIG_TRUSTED_STORAGE_BACKEND_AEAD_KEY_DERIVE_FROM_HUK
-
-#if defined(CONFIG_TRUSTED_STORAGE_STORAGE_BACKEND_SETTINGS)
+#if defined(CONFIG_SECURE_STORAGE_ITS_STORE_IMPLEMENTATION_SETTINGS)
    i_status = settings_subsys_init();
    if (i_status != 0)
    {
@@ -277,7 +247,7 @@ static int si_InitPersistentKeyStorage(void)
    {
       APP_LOG_INF("Settings backend initialized for persistent PSA storage");
    }
-#endif // CONFIG_TRUSTED_STORAGE_STORAGE_BACKEND_SETTINGS
+#endif // CONFIG_SECURE_STORAGE_ITS_STORE_IMPLEMENTATION_SETTINGS
 
    return i_status;
 }
@@ -354,7 +324,7 @@ static psa_status_t st_GenerateDeviceKey(psa_key_id_t *tpt_signingKey)
          // Check if the error is due to persistent key storage not being ready
          if (t_status == PSA_ERROR_BAD_STATE)
          {
-            APP_LOG_ERR("Persistent key storage is not ready. Check trusted storage/HUK provisioning");
+            APP_LOG_ERR("Persistent key storage is not ready. Check secure storage/HUK provisioning");
          }
 
          APP_LOG_ERR("Failed to generate signing key: %d", t_status);
@@ -635,11 +605,15 @@ static void sv_FormatUUIDString(const uint8_t *u8pt_UUID, char *cpt_UUIDString)
 /******************************************************************************/
 /**
  * @public        gt_InitCryptoStorage
- * @brief         Initialize the trusted storage backend (HUK, settings) and the
- *                PSA crypto library. Runs once; later calls return the first
- *                result.
- * @return        PSA_SUCCESS when both are ready, PSA_ERROR_STORAGE_FAILURE if
- *                the storage backend failed, or the psa_crypto_init() error.
+ * @brief         Initialize the storage backend (settings) and the PSA crypto
+ *                library, then check that the hardware unique key exists: secure
+ *                storage encrypts every ITS entry with a key derived from it,
+ *                and NCS writes a random one inside psa_crypto_init() on first
+ *                boot (CONFIG_HW_UNIQUE_KEY_WRITE_ON_CRYPTO_INIT). Runs once;
+ *                later calls return the first result.
+ * @return        PSA_SUCCESS when all are ready, PSA_ERROR_STORAGE_FAILURE if
+ *                the storage backend failed or there is no HUK after crypto
+ *                init, or the psa_crypto_init() error.
  */
 psa_status_t gt_InitCryptoStorage(void)
 {
@@ -673,6 +647,15 @@ psa_status_t gt_InitCryptoStorage(void)
    {
       APP_LOG_INF("Cryptographic library initialized successfully.");
    }
+
+#if defined(CONFIG_HW_UNIQUE_KEY)
+   // Check if crypto init left the device without the key its storage needs
+   if ((slt_status == PSA_SUCCESS) && !hw_unique_key_are_any_written())
+   {
+      APP_LOG_ERR("No hardware unique key after crypto init: secure storage cannot work");
+      slt_status = PSA_ERROR_STORAGE_FAILURE;
+   }
+#endif // CONFIG_HW_UNIQUE_KEY
 
    return slt_status;
 }

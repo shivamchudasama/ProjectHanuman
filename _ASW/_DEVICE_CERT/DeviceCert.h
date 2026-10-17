@@ -19,14 +19,6 @@
 #include <zephyr/drivers/hwinfo.h>
 #include <psa/internal_trusted_storage.h>
 
-#if defined(CONFIG_TRUSTED_STORAGE_BACKEND_AEAD_KEY_DERIVE_FROM_HUK)
-#include <hw_unique_key.h>
-#endif // CONFIG_TRUSTED_STORAGE_BACKEND_AEAD_KEY_DERIVE_FROM_HUK
-
-#if defined(CONFIG_TRUSTED_STORAGE_STORAGE_BACKEND_SETTINGS)
-#include <zephyr/settings/settings.h>
-#endif // CONFIG_TRUSTED_STORAGE_STORAGE_BACKEND_SETTINGS
-
 #include "CSR_Generator.h"
 #include "DeviceCert_Types.h"
 #include "DeviceCert_Config.h"

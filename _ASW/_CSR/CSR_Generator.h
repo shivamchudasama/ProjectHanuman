@@ -18,13 +18,13 @@
 #include <zephyr/drivers/hwinfo.h>
 #include <psa/internal_trusted_storage.h>
 
-#if defined(CONFIG_TRUSTED_STORAGE_BACKEND_AEAD_KEY_DERIVE_FROM_HUK)
+#if defined(CONFIG_HW_UNIQUE_KEY)
 #include <hw_unique_key.h>
-#endif // CONFIG_TRUSTED_STORAGE_BACKEND_AEAD_KEY_DERIVE_FROM_HUK
+#endif // CONFIG_HW_UNIQUE_KEY
 
-#if defined(CONFIG_TRUSTED_STORAGE_STORAGE_BACKEND_SETTINGS)
+#if defined(CONFIG_SECURE_STORAGE_ITS_STORE_IMPLEMENTATION_SETTINGS)
 #include <zephyr/settings/settings.h>
-#endif // CONFIG_TRUSTED_STORAGE_STORAGE_BACKEND_SETTINGS
+#endif // CONFIG_SECURE_STORAGE_ITS_STORE_IMPLEMENTATION_SETTINGS
 
 #include "CSR_Generator_Config.h"
 #include "CSR_Generator_Types.h"

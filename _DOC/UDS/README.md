@@ -271,5 +271,7 @@ slower) or `CONFIG_UDS_RESPONSE_MAX`.
 - the block cap, bad and busy files, refusals, targets, diagnostic requests, unlock, the
   keep-alive.
 
+`test_uds_udsoncan.py` checks the same `uds_flash` conversation against python-udsoncan, an ISO 14229 implementation from outside the repo: every request is what it encodes, every answer one it accepts. The fuzz targets `fuzz_uds_client` (ECU answers), `fuzz_uds_job` (a cut or corrupted stored file, fuzzed sequence parameters) and `fuzz_uds_cmd` (the BLE messages) are in `_TEST/fuzz`.
+
 On hardware: the manual `hil-uds-tests` job in `ci.yml` (a DK with the click and a USB-CAN adapter
 running the simulator) is a placeholder for §7.

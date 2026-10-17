@@ -53,7 +53,7 @@ def test_expected_statuses_and_order(setup):
                 "ca_without_cert_sign": neg.NOT_CA, "ca_bad_self_signature": neg.BAD_SIG,
                 "ca_p384": neg.BAD_PROFILE, "dev_other_ca": neg.BAD_SIG, "dev_bad_signature": neg.BAD_SIG,
                 "dev_foreign_key": neg.KEY_MISMATCH, "dev_other_subject": neg.SUBJECT_MISMATCH,
-                "dev_ca_flag": neg.BAD_PROFILE, "dev_no_key_agreement": neg.BAD_PROFILE,
+                "dev_other_device_cn": neg.SUBJECT_MISMATCH, "dev_ca_flag": neg.BAD_PROFILE, "dev_no_key_agreement": neg.BAD_PROFILE,
                 "dev_no_digital_signature": neg.BAD_PROFILE, "dev_sha384": neg.BAD_PROFILE}
     assert {n: e for n, _, e in got} == expected
     assert all(0 < len(c.der) <= 1024 for c in cases.values())
@@ -98,6 +98,11 @@ def test_device_cases_have_only_their_defect(setup):
     ok_except(load(c["dev_bad_signature"]), by=False)
     ok_except(load(c["dev_foreign_key"]), key=False)
     ok_except(load(c["dev_other_subject"]), subject=False)
+    other = load(c["dev_other_device_cn"])
+    ok_except(other, subject=False)
+    # Only the CN's bytes differ: a length check alone would not catch it
+    assert len(other.subject.public_bytes()) == len(csr.subject.public_bytes())
+    assert [a.oid for a in other.subject] == [a.oid for a in csr.subject]
     ok_except(load(c["dev_ca_flag"]), leaf=False)
     ok_except(load(c["dev_no_key_agreement"]), agree=False)
     ok_except(load(c["dev_no_digital_signature"]), sign=False)
