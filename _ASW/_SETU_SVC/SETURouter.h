@@ -19,6 +19,7 @@
 /*                                  INCLUDES                                  */
 /*                                                                            */
 /******************************************************************************/
+#include <stdbool.h>
 #include <stdint.h>
 #include "SETU.h"
 
@@ -30,9 +31,9 @@
 /**
  * @def           SETU_ROUTER_MAX_ROUTES
  * @brief         Maximum number of registered appType ranges: hex upload, file
- *                commands, provisioning, pairing and UDS.
+ *                commands, provisioning, pairing, UDS and host authentication.
  */
-#define SETU_ROUTER_MAX_ROUTES               (5U)
+#define SETU_ROUTER_MAX_ROUTES               (6U)
 
 /******************************************************************************/
 /*                                                                            */
@@ -45,6 +46,26 @@
 /*                                 STRUCTURES                                 */
 /*                                                                            */
 /******************************************************************************/
+/**
+ * @typedef       SETURouterAdmit_F
+ * @brief         Gate: whether the link the Server serves may reach an appType
+ *                now. Consulted for every new transfer and short message while
+ *                no filter applies. Runs on the SETU engine thread with the
+ *                SETU lock held: it must not block.
+ * @param[in]     u8_appType Application type.
+ * @return        true to admit, false to refuse.
+ */
+typedef bool (*SETURouterAdmit_F)(uint8_t u8_appType);
+
+/**
+ * @typedef       SETURouterRefused_F
+ * @brief         Told about every transfer or short message the gate refused
+ *                (same thread rules as SETURouterAdmit_F).
+ * @param[in]     u8_appType Application type refused.
+ * @return        None.
+ */
+typedef void (*SETURouterRefused_F)(uint8_t u8_appType);
+
 /**
  * @struct        SETURoute_T
  * @brief         One module's appType range and its callbacks. Every callback
@@ -89,6 +110,7 @@ typedef struct
 /******************************************************************************/
 extern int gi_SETURouter_Register(const SETURoute_T *stpt_route);
 extern int gi_SETURouter_Start(void);
+extern int gi_SETURouter_SetGate(SETURouterAdmit_F fpt_admit, SETURouterRefused_F fpt_refused);
 extern void gv_SETURouter_SetFilter(uint8_t u8_first, uint8_t u8_last);
 extern void gv_SETURouter_ClearFilter(void);
 #if SETU_ENABLE_CLIENT

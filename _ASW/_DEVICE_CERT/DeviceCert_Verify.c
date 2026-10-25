@@ -20,7 +20,10 @@
  *                  the own certificate must carry this device's key and the CSR
  *                  subject;
  *                - the 26-byte SPKI prefix is checked before the public key is
- *                  taken from pk_raw.
+ *                  taken from pk_raw;
+ *                - host certificates (extendedKeyUsage clientAuth) are a role of
+ *                  their own: ge_VerifyHostCertificate() requires it, and a
+ *                  device certificate must not carry it.
  * @date          01/10/2026
  * @author        Shivam Chudasama [SC]
  * @copyright     Bajaj Auto Technology Limited (BATL)
@@ -116,6 +119,10 @@ static bool sb_IsCA(const mbedtls_x509_crt *stpt_crt);
 static DeviceCertStatus_E se_VerifySelfSignature(mbedtls_x509_crt *stpt_crt);
 static DeviceCertStatus_E se_VerifyChain(mbedtls_x509_crt *stpt_crt);
 static DeviceCertStatus_E se_CheckLeafProfile(const mbedtls_x509_crt *stpt_crt);
+static bool sb_IsHostCert(const mbedtls_x509_crt *stpt_crt);
+static DeviceCertStatus_E se_CheckHostProfile(const mbedtls_x509_crt *stpt_crt);
+static DeviceCertStatus_E se_ImportPublicKey(const mbedtls_x509_crt *stpt_crt,
+   psa_key_id_t *tpt_keyID);
 static DeviceCertStatus_E se_VerifyDeviceCert(mbedtls_x509_crt *stpt_crt,
    const uint8_t *u8pt_der, size_t t_len);
 static DeviceCertStatus_E se_VerifyOwn(const uint8_t *u8pt_der, size_t t_len,
@@ -154,6 +161,15 @@ static const uint8_t su8ar_P256SPKIPrefix[DEVICE_CERT_P256_SPKI_PREFIX_LEN] = {
  */
 static const uint8_t su8ar_ecdsaWithSHA256OID[] = {
    0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02,
+};
+
+/**
+ * @var           scu8ar_oidClientAuth
+ * @brief         OID 1.3.6.1.5.5.7.3.2 (id-kp-clientAuth), content bytes only:
+ *                the extendedKeyUsage that marks a host certificate.
+ */
+static const uint8_t scu8ar_oidClientAuth[] = {
+   0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02,
 };
 
 /**
@@ -417,6 +433,95 @@ static DeviceCertStatus_E se_CheckLeafProfile(const mbedtls_x509_crt *stpt_crt)
       return eDCS_BAD_PROFILE;
    }
 
+   // Check it is not a host certificate (a host must not pose as a device)
+   if (sb_IsHostCert(stpt_crt))
+   {
+      APP_LOG_WRN("Device certificate is a host certificate (clientAuth)");
+      return eDCS_BAD_PROFILE;
+   }
+
+   return eDCS_OK;
+}
+
+/**
+ * @private       sb_IsHostCert
+ * @brief         Whether a certificate carries the host role: an
+ *                extendedKeyUsage extension that allows clientAuth.
+ * @param[in]     stpt_crt Parsed certificate.
+ * @return        true for a host certificate.
+ */
+static bool sb_IsHostCert(const mbedtls_x509_crt *stpt_crt)
+{
+   return mbedtls_x509_crt_has_ext_type(stpt_crt, MBEDTLS_X509_EXT_EXTENDED_KEY_USAGE) &&
+      (mbedtls_x509_crt_check_extended_key_usage(stpt_crt, (const char *)scu8ar_oidClientAuth,
+         sizeof(scu8ar_oidClientAuth)) == 0);
+}
+
+/**
+ * @private       se_CheckHostProfile
+ * @brief         Check a host certificate is not a CA, allows digitalSignature
+ *                (it signs the handshake; KeyUsage must be present) and carries
+ *                the host role (extendedKeyUsage clientAuth).
+ * @param[in]     stpt_crt Parsed certificate.
+ * @return        eDCS_OK, or eDCS_BAD_PROFILE.
+ */
+static DeviceCertStatus_E se_CheckHostProfile(const mbedtls_x509_crt *stpt_crt)
+{
+   // Check the certificate is not a CA
+   if (sb_IsCA(stpt_crt))
+   {
+      APP_LOG_WRN("Host certificate is a CA certificate");
+      return eDCS_BAD_PROFILE;
+   }
+
+   // Check the KeyUsage extension is present and allows signing
+   if ((!mbedtls_x509_crt_has_ext_type(stpt_crt, MBEDTLS_X509_EXT_KEY_USAGE)) ||
+      (mbedtls_x509_crt_check_key_usage(stpt_crt, MBEDTLS_X509_KU_DIGITAL_SIGNATURE) != 0))
+   {
+      APP_LOG_WRN("Host certificate does not allow digitalSignature");
+      return eDCS_BAD_PROFILE;
+   }
+
+   // Check it carries the host role
+   if (!sb_IsHostCert(stpt_crt))
+   {
+      APP_LOG_WRN("Host certificate has no clientAuth extendedKeyUsage");
+      return eDCS_BAD_PROFILE;
+   }
+
+   return eDCS_OK;
+}
+
+/**
+ * @private       se_ImportPublicKey
+ * @brief         Import a verified certificate's public key into PSA as a
+ *                volatile ECDSA-SHA256 verify key.
+ * @param[in]     stpt_crt Verified certificate (P-256 SPKI checked).
+ * @param[out]    tpt_keyID Receives the key ID on eDCS_OK.
+ * @return        eDCS_OK, or eDCS_INTERNAL.
+ */
+static DeviceCertStatus_E se_ImportPublicKey(const mbedtls_x509_crt *stpt_crt,
+   psa_key_id_t *tpt_keyID)
+{
+   psa_key_attributes_t st_attr = PSA_KEY_ATTRIBUTES_INIT;
+   psa_status_t t_status;
+
+   psa_set_key_type(&st_attr, PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_SECP_R1));
+   psa_set_key_bits(&st_attr, 256);
+   psa_set_key_usage_flags(&st_attr, (PSA_KEY_USAGE_VERIFY_MESSAGE | PSA_KEY_USAGE_VERIFY_HASH));
+   psa_set_key_algorithm(&st_attr, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
+
+   t_status = psa_import_key(&st_attr, &stpt_crt->pk_raw.p[DEVICE_CERT_P256_SPKI_PREFIX_LEN],
+      DEVICE_CERT_P256_PUB_KEY_LEN, tpt_keyID);
+   psa_reset_key_attributes(&st_attr);
+
+   // Check if the public key could not be imported
+   if (t_status != PSA_SUCCESS)
+   {
+      APP_LOG_ERR("Public key import failed: %d", t_status);
+      return eDCS_INTERNAL;
+   }
+
    return eDCS_OK;
 }
 
@@ -669,9 +774,7 @@ DeviceCertStatus_E ge_VerifyRemoteDeviceCertificate(const uint8_t *u8pt_der, siz
    psa_key_id_t *tpt_remotePubKeyID)
 {
    mbedtls_x509_crt st_crt;
-   psa_key_attributes_t st_attr = PSA_KEY_ATTRIBUTES_INIT;
    DeviceCertStatus_E e_status;
-   psa_status_t t_status;
 
    // Check if there is somewhere to return the key
    if (tpt_remotePubKeyID == NULL)
@@ -684,25 +787,74 @@ DeviceCertStatus_E ge_VerifyRemoteDeviceCertificate(const uint8_t *u8pt_der, siz
    // Check if the certificate passed: import its public key
    if (e_status == eDCS_OK)
    {
-      psa_set_key_type(&st_attr, PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_SECP_R1));
-      psa_set_key_bits(&st_attr, 256);
-      psa_set_key_usage_flags(&st_attr, (PSA_KEY_USAGE_VERIFY_MESSAGE | PSA_KEY_USAGE_VERIFY_HASH));
-      psa_set_key_algorithm(&st_attr, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
-
-      t_status = psa_import_key(&st_attr, &st_crt.pk_raw.p[DEVICE_CERT_P256_SPKI_PREFIX_LEN],
-         DEVICE_CERT_P256_PUB_KEY_LEN, tpt_remotePubKeyID);
-
-      // Check if the public key could not be imported
-      if (t_status != PSA_SUCCESS)
-      {
-         APP_LOG_ERR("Remote public key import failed: %d", t_status);
-         e_status = eDCS_INTERNAL;
-      }
-
-      psa_reset_key_attributes(&st_attr);
+      e_status = se_ImportPublicKey(&st_crt, tpt_remotePubKeyID);
    }
 
    mbedtls_x509_crt_free(&st_crt);
+
+   return e_status;
+}
+
+/**
+ * @public        ge_VerifyHostCertificate
+ * @brief         Verify a host's certificate (signed by the trust anchor,
+ *                P-256, ecdsa-with-SHA256, CA:FALSE, KeyUsage digitalSignature,
+ *                extendedKeyUsage clientAuth: the host role) and import its
+ *                public key into PSA as a volatile ECDSA-SHA256 verify key, for
+ *                checking the host's handshake signature. The caller destroys
+ *                the key with psa_destroy_key().
+ * @param[in]     u8pt_der DER certificate.
+ * @param[in]     t_len Length of the DER certificate.
+ * @param[out]    tpt_hostPubKeyID Receives the imported key ID on eDCS_OK.
+ * @return        eDCS_OK, eDCS_PARSE, eDCS_BAD_PROFILE (also a device
+ *                certificate), eDCS_NOT_CA (no CA set), eDCS_BAD_SIG or
+ *                eDCS_INTERNAL.
+ */
+DeviceCertStatus_E ge_VerifyHostCertificate(const uint8_t *u8pt_der, size_t t_len,
+   psa_key_id_t *tpt_hostPubKeyID)
+{
+   mbedtls_x509_crt st_crt;
+   DeviceCertStatus_E e_status;
+
+   // Check if there is somewhere to return the key
+   if (tpt_hostPubKeyID == NULL)
+   {
+      return eDCS_INTERNAL;
+   }
+
+   e_status = se_Parse(&st_crt, u8pt_der, t_len);
+
+   // Check if parsing succeeded
+   if (e_status == eDCS_OK)
+   {
+      e_status = se_CheckAlgorithms(&st_crt);
+   }
+
+   // Check if the algorithms are within the profile
+   if (e_status == eDCS_OK)
+   {
+      e_status = se_VerifyChain(&st_crt);
+   }
+
+   // Check if the certificate is signed by the CA
+   if (e_status == eDCS_OK)
+   {
+      e_status = se_CheckHostProfile(&st_crt);
+   }
+
+   // Check if the certificate passed: import its public key
+   if (e_status == eDCS_OK)
+   {
+      e_status = se_ImportPublicKey(&st_crt, tpt_hostPubKeyID);
+   }
+
+   mbedtls_x509_crt_free(&st_crt);
+
+   // Check if the host certificate passed
+   if (e_status == eDCS_OK)
+   {
+      APP_LOG_INF("Host certificate verified (%u bytes)", (unsigned int)t_len);
+   }
 
    return e_status;
 }

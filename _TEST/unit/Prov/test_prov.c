@@ -203,6 +203,8 @@ struct bt_conn *gstpt_BLE_GetHostConn(void) { return sb_hostUp ? &sst_conn : NUL
 void gv_BLE_RefreshAdv(void) { su32_refreshCalls++; }
 bool gb_Pair_IsRunning(void) { return sb_pairRunning; }
 void gv_Pair_ForgetBonds(void) { su32_forgetCalls++; }
+static uint32_t su32_hostForgetCalls;
+void gv_HostAuth_Forget(void) { su32_hostForgetCalls++; }
 
 static SETURoute_T sst_route;
 static int si_registerRet;
@@ -401,6 +403,7 @@ void setUp(void)
    sb_hostUp = true;
    sb_pairRunning = false;
    su32_forgetCalls = 0U;
+   su32_hostForgetCalls = 0U;
    sb_cliReady = false;
    si_attachRet = 0;
    su32_attachCalls = 0U;
@@ -905,6 +908,7 @@ static void test_WipeForgetsBondsAndAdvertising(void)
    sv_RunProv();
    sv_AssertLastIs("result_deprovision_ok");
    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1U, su32_forgetCalls, "bonds belong to the old identity");
+   TEST_ASSERT_EQUAL_UINT32_MESSAGE(1U, su32_hostForgetCalls, "so does the host's");
    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1U, su32_refreshCalls, "advertise for provisioning again");
 }
 
@@ -918,6 +922,7 @@ static void test_WipeRefusedWhilePairing(void)
    sv_AssertCalls("");
    TEST_ASSERT_EQUAL_INT(ePS_PROVISIONED, ge_Prov_GetState());
    TEST_ASSERT_EQUAL_UINT32(0U, su32_forgetCalls);
+   TEST_ASSERT_EQUAL_UINT32(0U, su32_hostForgetCalls);
    TEST_ASSERT_NOT_NULL(gcpt_SimLogFind("wipe refused: pairing in progress"));
 
    // The button wipe is refused the same way, without an answer

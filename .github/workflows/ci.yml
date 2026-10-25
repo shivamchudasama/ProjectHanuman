@@ -172,6 +172,20 @@ jobs:
       # (a mistyped or foreign symbol silently compiles its branch out)
       - name: Kconfig symbols used by the sources
         run: python3 app/_TEST/tools/check_config_symbols.py app build_ci/app/zephyr/.config
+      # The hardware jobs flash an image that opens the host window at every boot
+      # (nobody presses Button 3 on a runner; _DOC/HostAuth/PROTOCOL.md §1)
+      - name: Build the HIL image (host window at boot)
+        if: matrix.flash_if == 'spi'
+        working-directory: ncs
+        run: |
+          west build -p -b "$BOARD" --sysbuild -d "$GITHUB_WORKSPACE/build_hil" "$GITHUB_WORKSPACE/app" \
+            -- -DFLASH_IF=spi -Dapp_CONFIG_HOST_AUTH_BOOT_WINDOW=y
+          grep -q '^CONFIG_HOST_AUTH_BOOT_WINDOW=y' "$GITHUB_WORKSPACE/build_hil/app/zephyr/.config"
+      - uses: actions/upload-artifact@v7
+        if: matrix.flash_if == 'spi'
+        with:
+          name: firmware-hil
+          path: build_hil/merged.hex
       - name: Memory usage
         run: |
           {
@@ -253,10 +267,38 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          name: firmware
+          name: firmware-hil
           path: fw
       - name: Flash
-        run: nrfutil device program --firmware fw/build_ci/merged.hex --options chip_erase_mode=ERASE_ALL
+        run: nrfutil device program --firmware fw/merged.hex --options chip_erase_mode=ERASE_ALL
+      # Device provisioning (_DOC/Provisioning/PROTOCOL.md): the runner hosts the
+      # PC-side SETU service (Windows), acts as the CA and provisions the DK.
+      # The chip erase above makes the device generate a fresh key and CSR, and an
+      # unprovisioned device takes nothing but provisioning.
+      # --negative sends every certificate the device must reject
+      # (blehost/pki/negative.py) before the good CA and device certificate (a
+      # provisioned device refuses certificates; a non-fresh one is wiped first)
+      # and fails on any wrong RESULT: the set the host test devicecert_verify
+      # runs too, here on the device's own mbedTLS, PSA and CRACEN.
+      - name: Provision the device and test its certificate verification
+        run: python _TOOLS/BleHostGUI/setu_client.py provision --negative --name "ProjectHanuman" --ca ${{ runner.temp }}/ca --out ${{ runner.temp }}/device.pem
+      - name: Check the issued certificate against the CA
+        run: openssl verify -CAfile ${{ runner.temp }}/ca/ca_cert.pem ${{ runner.temp }}/device.pem
+      # Host authentication (_DOC/HostAuth/PROTOCOL.md): the runner becomes the
+      # device's trusted host. An untrusted host's disconnect closes the window,
+      # so the reset reopens it (boot window); a trusted host's disconnect opens
+      # the 60 s grace window, enough for each following command.
+      - name: Become the trusted host
+        shell: pwsh
+        run: |
+          $cli = "_TOOLS/BleHostGUI/setu_client.py"
+          nrfutil device reset
+          python $cli hostcert "HIL runner" --ca ${{ runner.temp }}/ca --host ${{ runner.temp }}/host
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python $cli auth --name "ProjectHanuman" --host ${{ runner.temp }}/host
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $out = python $cli authstatus --name "ProjectHanuman" | Out-String
+          if ($out -notmatch "TRUSTED") { throw "not trusted: $out" }
       - name: Upload AA00000100.hex over BLE
         run: python _TOOLS/BleHostGUI/setu_client.py hex AA00000100.hex --name "ProjectHanuman"
       # The file system on the external flash (_DOC/FileSysManager): the upload
@@ -277,21 +319,10 @@ jobs:
           python $cli fs get /FW/HIL.BIN ${{ runner.temp }}/hil_after_reset.bin --name "ProjectHanuman"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -c "import sys; sys.path.insert(0, '_TOOLS/BleHostGUI'); import setu_client as bx; want = bx.file_image(bx.parse_ihex('AA00000100.hex')); got = [open(f, 'rb').read() for f in sys.argv[1:]]; sys.exit(0 if all(g == want for g in got) else 'stored file differs')" ${{ runner.temp }}/hil.bin ${{ runner.temp }}/hil_after_reset.bin
-      # Device provisioning (_DOC/Provisioning/PROTOCOL.md): the runner hosts the
-      # PC-side SETU service (Windows), acts as the CA and provisions the DK.
-      # The chip erase above makes the device generate a fresh key and CSR.
-      # --negative sends every certificate the device must reject
-      # (blehost/pki/negative.py) before the good CA and device certificate (a
-      # provisioned device refuses certificates; a non-fresh one is wiped first)
-      # and fails on any wrong RESULT: the set the host test devicecert_verify
-      # runs too, here on the device's own mbedTLS, PSA and CRACEN.
-      - name: Provision the device and test its certificate verification
-        run: python _TOOLS/BleHostGUI/setu_client.py provision --negative --name "ProjectHanuman" --ca ${{ runner.temp }}/ca --out ${{ runner.temp }}/device.pem
-      - name: Check the issued certificate against the CA
-        run: openssl verify -CAfile ${{ runner.temp }}/ca/ca_cert.pem ${{ runner.temp }}/device.pem
       # One-time provisioning: a provisioned device refuses another run, so the
-      # second provision must fail; DEPROVISION wipes the ITS credentials and a
-      # new key and CSR make it provisionable again.
+      # second provision must fail; DEPROVISION (the trusted host's) wipes the ITS
+      # credentials and every bond, and a new key and CSR make it provisionable
+      # again (after a reset: the wiped host is no longer trusted, no grace window).
       - name: A provisioned device refuses another provisioning
         shell: pwsh
         run: |
@@ -302,7 +333,10 @@ jobs:
         run: |
           python _TOOLS/BleHostGUI/setu_client.py deprovision --name "ProjectHanuman"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          nrfutil device reset
           python _TOOLS/BleHostGUI/setu_client.py provision --name "ProjectHanuman" --ca ${{ runner.temp }}/ca
+      # Next step when it exists: a second BLE adapter as an untrusted host, which
+      # must get REFUSED for hex, files and DEPROVISION, and HOST_BONDED for HELLO.
       # Next step when it exists: capture the UART and check the
       # "SEG addr=0x00000000 len=6560 crc=0xe2e72827" line, the two PEM blocks,
       # "device provisioned", and after a reset "provisioned: stored
@@ -325,16 +359,25 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          name: firmware
+          name: firmware-hil
           path: fw
-      - name: Flash both DKs (fresh keys, no bonds)
+      - name: Flash both DKs (fresh keys, no bonds, host window at boot)
         run: |
-          nrfutil device program --serial-number ${{ vars.DK_A_SNR }} --firmware fw/build_ci/merged.hex --options chip_erase_mode=ERASE_ALL
-          nrfutil device program --serial-number ${{ vars.DK_B_SNR }} --firmware fw/build_ci/merged.hex --options chip_erase_mode=ERASE_ALL
+          nrfutil device program --serial-number ${{ vars.DK_A_SNR }} --firmware fw/merged.hex --options chip_erase_mode=ERASE_ALL
+          nrfutil device program --serial-number ${{ vars.DK_B_SNR }} --firmware fw/merged.hex --options chip_erase_mode=ERASE_ALL
       - name: Provision both with the same CA
         run: |
           ${{ env.CLI }} provision --address ${{ env.A }} --ca ${{ runner.temp }}/ca
           ${{ env.CLI }} provision --address ${{ env.B }} --ca ${{ runner.temp }}/ca
+      # CONTROL takes START only from each device's trusted host
+      # (_DOC/HostAuth/PROTOCOL.md); the resets reopen the host windows
+      - name: Become the trusted host of both
+        run: |
+          nrfutil device reset --serial-number ${{ vars.DK_A_SNR }}
+          nrfutil device reset --serial-number ${{ vars.DK_B_SNR }}
+          ${{ env.CLI }} hostcert "HIL runner" --ca ${{ runner.temp }}/ca --host ${{ runner.temp }}/host
+          ${{ env.CLI }} auth --address ${{ env.A }} --host ${{ runner.temp }}/host
+          ${{ env.CLI }} auth --address ${{ env.B }} --host ${{ runner.temp }}/host
       # Exit code 0 only when both devices end PAIRED: certificates exchanged and
       # verified, signed OOB data verified, LE SC OOB pairing at level 4, bonded,
       # SECURED written over the encrypted link
@@ -356,8 +399,15 @@ jobs:
         run: |
           ${{ env.CLI }} unpair --address ${{ env.A }}
           ${{ env.CLI }} deprovision --address ${{ env.B }}
+          nrfutil device reset --serial-number ${{ vars.DK_B_SNR }}
           ${{ env.CLI }} provision --address ${{ env.B }} --ca ${{ runner.temp }}/other_ca
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # B now trusts hosts of the other CA only
+          nrfutil device reset --serial-number ${{ vars.DK_B_SNR }}
+          ${{ env.CLI }} hostcert "HIL runner" --ca ${{ runner.temp }}/other_ca --host ${{ runner.temp }}/other_host
+          ${{ env.CLI }} auth --address ${{ env.B }} --host ${{ runner.temp }}/other_host
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          nrfutil device reset --serial-number ${{ vars.DK_A_SNR }}
           $out = ${{ env.CLI }} pair --central ${{ env.A }} --peripheral ${{ env.B }} | Out-String
           if ($LASTEXITCODE -eq 0) { throw "paired across CAs" } else { $global:LASTEXITCODE = 0 }
           if ($out -notmatch "certificate was rejected") { throw "unexpected failure: $out" }
@@ -379,10 +429,18 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          name: firmware
+          name: firmware-hil
           path: fw
-      - name: Flash the DK
-        run: nrfutil device program --firmware fw/build_ci/merged.hex --options chip_erase_mode=ERASE_ALL
+      - name: Flash the DK, provision it, become its trusted host
+        shell: pwsh
+        run: |
+          nrfutil device program --firmware fw/merged.hex --options chip_erase_mode=ERASE_ALL
+          ${{ env.CLI }} provision --name "ProjectHanuman" --ca ${{ runner.temp }}/ca
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          nrfutil device reset
+          ${{ env.CLI }} hostcert "HIL runner" --ca ${{ runner.temp }}/ca --host ${{ runner.temp }}/host
+          ${{ env.CLI }} auth --name "ProjectHanuman" --host ${{ runner.temp }}/host
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Store the image, flash it into the simulated ECU, compare
         shell: pwsh
         run: |

@@ -49,6 +49,7 @@
 #include "DeviceCert.h"
 #include "DeviceCert_Verify.h"
 #include "Pair.h"
+#include "HostAuth.h"
 #include "AppLog.h"
 
 /******************************************************************************/
@@ -854,7 +855,9 @@ static void sv_HandleWipe(uint8_t u8_refAppType)
          e_result = ePRS_INTERNAL;
       }
 
+      // The bonds go with the identity: the peer's and the host's
       gv_Pair_ForgetBonds();
+      gv_HostAuth_Forget();
       atomic_set(&st_certBusy, 0);
 
       // Unprovisioned: advertise for provisioning, not for pairing

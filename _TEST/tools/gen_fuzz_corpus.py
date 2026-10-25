@@ -87,6 +87,20 @@ def main() -> None:
                  f"flash_{name}_two": hdr + file_ + file_}
         write_dir(out_dir, "uds_job", seeds)
 
+    # fuzz_host_auth: connect, the vector HELLO, FINISH, then pairing at level 4
+    ha = vec["host_auth"]
+    hello = bytes.fromhex(ha["handshake"]["hello"])
+    finish = bytes.fromhex(ha["handshake"]["finish"])
+    op_hello = bytes([2]) + struct.pack("<H", len(hello)) + b"\xff" + hello
+    op_finish = bytes([3, finish[1] - 0x60, finish[0]]) + finish[2:]
+    seeds = {
+        "handshake": bytes([0]) + op_hello + op_finish + bytes([5, 0x07, 4, 4, 0]),
+        "handshake_then_drop": bytes([0]) + op_hello + op_finish + bytes([5, 0x07, 1, 6, 1, 7, 200]),
+        "status_req": bytes([0, 3, 0, 0]),
+        "window_and_timeout": bytes([6, 0, 0]) + op_hello + bytes([7, 70, 7, 200]),
+    }
+    write_dir(out_dir, "host_auth", seeds)
+
 
 def write_dir(out_dir: str, name: str, seeds: dict) -> None:
     d = os.path.join(out_dir, name)

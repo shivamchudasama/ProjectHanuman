@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.x509.oid import NameOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 CA_CERT, DEV_CERT = 0x24, 0x25
 OK, PARSE, NOT_CA, BAD_SIG, KEY_MISMATCH, SUBJECT_MISMATCH, BAD_PROFILE = 0, 3, 4, 5, 6, 7, 8
@@ -62,11 +62,13 @@ def _ca_cert(key, name, ca=True, signer=None, issuer=None, cert_sign=True):
 
 
 def _dev_cert(ca_key, ca_name, subject, public_key, ca_flag=False, key_agreement=True, alg=None,
-              digital_signature=True):
+              digital_signature=True, client_auth=False):
     b = _builder(subject, ca_name, public_key)
     b = b.add_extension(x509.BasicConstraints(ca=ca_flag, path_length=None), critical=True)
     b = b.add_extension(_ku(key_agreement=key_agreement, digital_signature=digital_signature),
                         critical=False)
+    if client_auth:
+        b = b.add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH]), critical=False)
     return b.sign(ca_key, alg or hashes.SHA256())
 
 
@@ -129,5 +131,8 @@ def negative_cases(ca, csr_der: bytes) -> list:
              _der(_dev_cert(ca.key, good_name, subject, dev_key, digital_signature=False)), BAD_PROFILE),
         Case("dev_sha384", DEV_CERT,
              _der(_dev_cert(ca.key, good_name, subject, dev_key, alg=hashes.SHA384())), BAD_PROFILE),
+        # The host role (EKU clientAuth) on a device certificate
+        Case("dev_host_role", DEV_CERT,
+             _der(_dev_cert(ca.key, good_name, subject, dev_key, client_auth=True)), BAD_PROFILE),
     ]
     return cases

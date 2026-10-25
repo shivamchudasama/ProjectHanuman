@@ -20,6 +20,7 @@ TARGETS = {                       # target: extra libFuzzer options
     "uds_cmd": [],
     "uds_client": [],
     "uds_job": ["-max_len=4096"],
+    "host_auth": ["-max_len=4096"],
 }
 
 

@@ -230,6 +230,37 @@ def emit_uds(cmd: dict, key: dict, flash: dict, o: list) -> None:
     o.append("};\n")
 
 
+def emit_host_auth(h: dict, o: list) -> None:
+    """Host authentication: constants, short frames, one whole handshake."""
+    o.append("/* ---- Host authentication (_DOC/HostAuth/PROTOCOL.md) ---- */")
+    for group, prefix in (("app_types", "VEC_HAUTH_APP_"), ("states", "VEC_HAUTH_STATE_"),
+                          ("flags", "VEC_HAUTH_FLAG_"), ("results", "VEC_HAUTH_RES_")):
+        for name, val in h[group].items():
+            o.append(f"#define {prefix}{name} ({val}U)")
+    o.append(f"#define VEC_HAUTH_APP_FIRST ({h['app_type_range'][0]}U)")
+    o.append(f"#define VEC_HAUTH_APP_LAST ({h['app_type_range'][1]}U)")
+    for key in ("version", "nonce_len", "point_len", "sig_len", "hash_len", "hello_min_len",
+                "challenge_header_len", "cert_max_len"):
+        o.append(f"#define VEC_HAUTH_{key.upper()} ({h[key]}U)")
+    o.append("")
+    emit_shorts("gstar_vecHauthShorts", h["shorts"], o)
+
+    hs = h["handshake"]
+    o.append(f"#define VEC_HAUTH_PASSKEY ({hs['passkey']}UL)")
+    for key, name in (("ca_cert", "CaCert"), ("device_cert", "DevCert"),
+                      ("device_private_key", "DevPriv"), ("device_public_key", "DevPub"),
+                      ("host_cert", "HostCert"), ("host_private_key", "HostPriv"),
+                      ("host_public_key", "HostPub"), ("host_eph_private_key", "HostEphPriv"),
+                      ("device_eph_private_key", "DevEphPriv"), ("nonce_host", "NonceHost"),
+                      ("nonce_device", "NonceDev"), ("point_host", "PointHost"),
+                      ("point_device", "PointDev"), ("transcript", "Transcript"),
+                      ("secret", "Secret"), ("hkdf_output", "Hkdf"), ("sig_device", "SigDev"),
+                      ("sig_host", "SigHost"), ("hello", "Hello"), ("challenge", "Challenge"),
+                      ("finish", "Finish")):
+        o.append(c_array(f"gu8ar_vecHauth{name}", f"VEC_HAUTH_{name.upper()}_LEN",
+                         bytes.fromhex(hs[key])))
+
+
 def main(json_path: str, root: str, out_path: str) -> None:
     with open(json_path) as f:
         v = json.load(f)
@@ -289,6 +320,7 @@ def main(json_path: str, root: str, out_path: str) -> None:
     emit_pairing(v["pairing"], o)
     emit_file_system(v["hex_file"], v["file_system"], o)
     emit_uds(v["uds_cmd"], v["uds_key"], v["uds_flash"], o)
+    emit_host_auth(v["host_auth"], o)
     o.append("#endif /* WIRE_VECTORS_H */\n")
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)

@@ -44,6 +44,19 @@ SECURED_VALUE = 0x01
 ADDR_PUBLIC, ADDR_RANDOM = 0, 1
 PROVISIONED = 3                                      # provisioning STATUS state
 
+# CONTROL is the trusted host's only (host authentication): ATT error 0x08
+# Insufficient Authorization otherwise; retried while a bonded link encrypts
+ATT_ERR_AUTHORIZATION = 0x08
+AUTH_RETRIES, AUTH_RETRY_DELAY = 6, 0.5
+
+
+def is_authorization_error(e: Exception) -> bool:
+    """Whether a GATT write failed with ATT Insufficient Authorization (bleak
+    words it per backend: a protocol error code, or the error's name)."""
+    text = str(e).lower()
+    return (getattr(e, "att_error", None) == ATT_ERR_AUTHORIZATION or "authoriz" in text
+            or "0x08" in text)
+
 
 class Role(enum.IntEnum):
     NONE = 0
@@ -320,9 +333,24 @@ class PairingDevice:
         self._update(await self.link.gatt.read_gatt_char(STATUS_UUID))
         return self.status
 
-    async def command(self, data: bytes):
-        """CONTROL write with response: the device refuses a bad command with an ATT error."""
-        await self.link.gatt.write_gatt_char(CONTROL_UUID, data, response=True)
+    async def command(self, data: bytes, auth_retries: int = AUTH_RETRIES, delay: float = AUTH_RETRY_DELAY):
+        """CONTROL write with response: the device refuses a bad command with an ATT error.
+
+        Only the device's trusted host may write CONTROL (host authentication). Right
+        after connecting, the device may not trust the link yet (it is still being
+        encrypted with the stored keys), so an authorization refusal is retried for
+        a moment; if it persists, this PC is not the device's trusted host."""
+        for attempt in range(auth_retries + 1):
+            try:
+                await self.link.gatt.write_gatt_char(CONTROL_UUID, data, response=True)
+                return
+            except Exception as e:
+                if not is_authorization_error(e):
+                    raise
+                if attempt == auth_retries:
+                    raise PairingError(f"the {self.label} device does not trust this PC: authenticate "
+                                       "it on the Host access page first") from None
+                await asyncio.sleep(delay)
 
     def _notified(self, _sender, data):
         try:

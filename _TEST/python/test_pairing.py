@@ -7,6 +7,7 @@ protocol's states (the rules of _ASW/_PAIR/Pair.c), each behind a fake link.
 """
 
 import asyncio
+import types
 
 import pytest
 from cryptography.exceptions import InvalidSignature
@@ -437,3 +438,52 @@ def test_probe_and_unpair():
     assert st.state == pp.State.IDLE and st.peer == ""
     assert "dev: UNPAIR sent" in world.logs
     assert not any(link.connected for link in world.links)
+
+
+# ---- CONTROL is the trusted host's (host authentication) --------------------------
+class _AuthGatt:
+    """CONTROL refused with ATT 0x08 for the first `refusals` writes."""
+
+    def __init__(self, refusals, error=None):
+        self.refusals = refusals
+        self.writes = 0
+        self.error = error or OSError("Protocol Error 0x08: Insufficient Authorization")
+
+    async def write_gatt_char(self, uuid, data, response=False):
+        self.writes += 1
+        if self.writes <= self.refusals:
+            raise self.error
+
+
+def _auth_device(gatt):
+    link = types.SimpleNamespace(gatt=gatt)
+    return pp.PairingDevice(link, "AA", label="central")
+
+
+def test_control_waits_for_trust_on_a_bonded_link():
+    gatt = _AuthGatt(refusals=2)
+    asyncio.run(_auth_device(gatt).command(pp.encode_cancel(), delay=0.0))
+    assert gatt.writes == 3
+
+
+def test_control_refused_for_an_untrusted_pc():
+    gatt = _AuthGatt(refusals=99)
+    with pytest.raises(pp.PairingError, match="does not trust this PC"):
+        asyncio.run(_auth_device(gatt).command(pp.encode_cancel(), auth_retries=3, delay=0.0))
+    assert gatt.writes == 4
+
+
+def test_other_control_errors_are_not_retried():
+    gatt = _AuthGatt(refusals=1, error=OSError("Protocol Error 0x0d: Invalid Attribute Value Length"))
+    with pytest.raises(OSError, match="0x0d"):
+        asyncio.run(_auth_device(gatt).command(b"\x01", delay=0.0))
+    assert gatt.writes == 1
+
+
+def test_authorization_error_detection():
+    assert pp.is_authorization_error(OSError("Insufficient Authorization"))
+    assert pp.is_authorization_error(OSError("ATT error 0x08"))
+    e = OSError("x")
+    e.att_error = 0x08
+    assert pp.is_authorization_error(e)
+    assert not pp.is_authorization_error(OSError("Insufficient Encryption (0x0f)"))

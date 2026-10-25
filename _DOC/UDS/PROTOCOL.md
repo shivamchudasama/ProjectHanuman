@@ -176,8 +176,10 @@ STATUS     0f 56 03 09 01 02 14 00 00 00 1e 00 00 00 36 72 05   FAILED: NRC 0x72
 
 ## 5. Security
 
-Like the file commands, UDS runs on the **unauthenticated host link**: anyone who can connect can
-set a target, send any UDS request (including ones that change ECU memory) and flash a connected
-ECU. It exists for the bench. Build production firmware with `CONFIG_UDS_CMD=n`, which leaves the
-range unregistered, until the host link is authenticated (a later feature: a paired or
-certificate-authenticated host).
+Like the file commands, UDS reaches a provisioned device only from its **trusted host**
+([../HostAuth/PROTOCOL.md §2](../HostAuth/PROTOCOL.md#2-the-gate)): the PC that proved a host
+certificate of the device's CA and bonded with the derived passkey. Every UDS message from another
+link is dropped and answered with REFUSED (`0x66`). An unprovisioned device takes none. Whoever holds a
+trusted host's credential and bond can still set a target, send any UDS request (including ones
+that change ECU memory) and flash a connected ECU. `CONFIG_UDS_CMD=n` leaves the range
+unregistered, for images without UDS over BLE.

@@ -20,6 +20,8 @@
 #include "Prov.h"
 #include "ProvButton.h"
 #include "Pair.h"
+#include "HostAuth.h"
+#include "HostAuthButton.h"
 #include "SETURouter.h"
 #if defined(CONFIG_APP_WDT)
 #include "Wdt.h"
@@ -55,7 +57,8 @@
 /**
  * @public        main
  * @brief         Starts the watchdog, the File System Manager, initializes the SETU users (hex
- *                upload, file commands, provisioning, pairing, UDS), the CAN
+ *                upload, file commands, provisioning, pairing, UDS, host
+ *                authentication and its gate), the CAN
  *                interface, the SETU Server and Client, the BLE stack and starts
  *                advertising.
  * @return        0 upon successful execution.
@@ -84,6 +87,11 @@ int main(void)
    // Certificate-based pairing with another device: its appType range, the SMP
    // callbacks and the LED
    (void)gi_Pair_Init();
+
+   // Host authentication: its appType range, the router's gate (only the
+   // trusted host reaches the device), and DK Button 3 for the host window
+   (void)gi_HostAuth_Init();
+   (void)gi_HostAuthButton_Init();
 
 #if defined(CONFIG_CANIF)
    // The CAN / CAN FD controller (MCP2518FD Click): boot configuration, traffic

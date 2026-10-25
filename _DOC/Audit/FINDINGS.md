@@ -6,10 +6,10 @@ Audit of the firmware (`_ASW`, `_LIB`), the PC tools (`_TOOLS`) and the tests (`
 
 **Not ready to deploy yet.** The tools found no memory-safety defect in the code that parses outside input, and the UDS conversation matches an independent ISO 14229 implementation byte for byte. What blocks deployment is the product configuration and the trust model, not crashes:
 
-1. Anyone in BLE range can wipe the device's identity, unpair it, change its files and drive UDS on the vehicle bus (F1).
+1. Anyone in BLE range can wipe the device's identity, unpair it, change its files and drive UDS on the vehicle bus (F1). **Fixed since by host authentication**; what remains is listed under *Fixes*.
 2. The debug port is open and there is no bootloader (F2).
 
-Both are kept on purpose while the BLE software and library stacks are built, and are to be closed when the application is developed on top of them. F3 (no watchdog, halt on a fault), F4 (stack margins) and F6 (compiled-out storage init) are fixed; see *Fixes* at the end.
+F2 is kept on purpose while the BLE software and library stacks are built, and is to be closed when the application is developed on top of them. F1 (unauthenticated host link), F3 (no watchdog, halt on a fault), F4 (stack margins) and F6 (compiled-out storage init) are fixed; see *Fixes* at the end.
 
 ## How it was tested
 
@@ -32,7 +32,7 @@ Most of this code was written with an AI assistant, so the audit relies first on
 
 | ID | Severity | Area | Finding | Status |
 |---|---|---|---|---|
-| F1 | **Critical** (for deployment) | Security | The host link is unauthenticated: DEPROVISION, UNPAIR/START, file commands and UDS are open to anyone in range | Kept on purpose until the application; open |
+| F1 | **Critical** (for deployment) | Security | The host link is unauthenticated: DEPROVISION, UNPAIR/START, file commands and UDS are open to anyone in range | **Fixed** (host authentication, `_ASW/_HOST_AUTH`); provisioning of an unprovisioned device stays open; hardware check pending |
 | F2 | **High** | Production config | Debug port open (`NRF_APPROTECT_DISABLE`), no bootloader (no field update or image verification) | Kept on purpose until the application; open |
 | F3 | **High** | Robustness | No watchdog and no `RESET_ON_FATAL_ERROR`: a fault halts the device | **Fixed** (`_ASW/_WDT`, `RESET_ON_FATAL_ERROR`) |
 | F4 | **Medium** | Resources | Static stack use 91 % (provisioning), 88 % (main), 87 % (dump), 78 % (pairing), before interrupts and indirect calls | **Fixed** (stacks raised); measure on hardware |
@@ -169,6 +169,25 @@ powershell -ExecutionPolicy Bypass -File _TEST\run_tests.ps1 -Static -Fuzz -Fuzz
 CI runs the static gate (`static-analysis`) and each fuzz target for 60 s (`fuzz`) on every push. The stack depth, the configuration-symbol audit and the mutation sampling were one-off scripts: rebuild with `-DEXTRA_CFLAGS="-fstack-usage -fcallgraph-info=su"` and walk the `.ci` call graphs from each thread entry; compare `#if CONFIG_*` symbols with `build/zephyr/.config`; flip one comparison per mutant, rebuild the unit's tests and run them.
 
 ## Fixes
+
+### F1: host authentication
+
+New module `_ASW/_HOST_AUTH` ([../HostAuth/README.md](../HostAuth/README.md), [../HostAuth/PROTOCOL.md](../HostAuth/PROTOCOL.md)). Each recommendation, and what was done:
+
+- **Authenticate the host.** Done: the PC proves a host certificate of the device's CA (extendedKeyUsage clientAuth), the device proves its device certificate, in a signed ECDH handshake. The passkey derived from it drives LE SC passkey entry, so the host's bond is at level 4. The device keeps one host bond. A provisioned device admits only that host, through a gate in the SETU router (hex upload, files, UDS, provisioning incl. DEPROVISION) and a check on Pairing CONTROL (ATT `0x08`).
+- **Physical action.** Done: the device advertises for a host only while DK Button 3 has opened its window; holding the button forgets the bonded host. Replacing a host needs someone at the device.
+- **`CONFIG_UDS_CMD` / `CONFIG_FS_CMD`.** Kept `y`: both ranges are behind the gate now.
+- **DEPROVISION behind the button only.** Not done as written. DEPROVISION needs the trusted host instead, and Button 0 held still wipes.
+- **GATT permissions `_LESC`.** Not done as written. SETU DATA must stay writable before encryption for the handshake itself, so the router's gate checks trust per appType instead. Pairing CONTROL checks trust in code.
+
+What remains open:
+- An **unprovisioned** device takes provisioning from any host that connects during a button window: it has no certificate yet, so it cannot authenticate one. Provision in a controlled place.
+- **No revocation or expiry** of host certificates (F11).
+- **On hardware:** Windows' `ProvidePin` against the DisplayOnly device (LE SC passkey entry, no prompt), the reconnection's encryption with the stored keys, the grace window, and the thread's stack (6 KiB, estimated).
+
+Tests: `host_auth`, `host_auth_crypto`, `host_auth_button`, the host cases of `devicecert_verify`, the gate in `setu_router`, `pair` and `prov` additions, `fuzz_host_auth`, and the Python side (`test_host_auth.py`, `test_host_credential.py`, `test_winrt_pairing.py`, `test_feature_host_access.py`).
+
+RAM: the module adds about 9.5 KB. The SPI build is at 92.0 % of 256 KiB, and the **sQSPI build at 98.3 % of 240 KiB**: measuring the stacks (F4) and trimming them is now needed before more is added there.
 
 ### F3: watchdog and reset on a fatal error
 

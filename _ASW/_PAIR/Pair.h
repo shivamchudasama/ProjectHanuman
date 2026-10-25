@@ -26,6 +26,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <sys/types.h>
+#include <zephyr/bluetooth/conn.h>
 
 /******************************************************************************/
 /*                                                                            */
@@ -182,6 +183,7 @@ extern void gv_Pair_OnSecurityChanged(struct bt_conn *stpt_conn, uint8_t u8_leve
    uint8_t u8_err);
 extern bool gb_Pair_IsAdvertising(void);
 extern bool gb_Pair_AwaitsBondedPeer(void);
+extern bool gb_Pair_GetBondedPeer(bt_addr_le_t *stpt_addr);
 
 /* ---- Pairing service (PairSvc.c, BT context) ----------------------------- */
 extern ssize_t gt_Pair_OnControlWrite(struct bt_conn *stpt_conn, const uint8_t *u8pt_data,

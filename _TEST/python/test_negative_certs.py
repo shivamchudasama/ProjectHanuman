@@ -13,6 +13,7 @@ from cryptography.x509.oid import SignatureAlgorithmOID
 
 from blehost.pki import negative as neg
 from blehost.pki.authority import CertificateAuthority
+from blehost.pki.host import is_host_certificate
 
 P256_SPKI_LEN = 91
 
@@ -54,7 +55,8 @@ def test_expected_statuses_and_order(setup):
                 "ca_p384": neg.BAD_PROFILE, "dev_other_ca": neg.BAD_SIG, "dev_bad_signature": neg.BAD_SIG,
                 "dev_foreign_key": neg.KEY_MISMATCH, "dev_other_subject": neg.SUBJECT_MISMATCH,
                 "dev_other_device_cn": neg.SUBJECT_MISMATCH, "dev_ca_flag": neg.BAD_PROFILE, "dev_no_key_agreement": neg.BAD_PROFILE,
-                "dev_no_digital_signature": neg.BAD_PROFILE, "dev_sha384": neg.BAD_PROFILE}
+                "dev_no_digital_signature": neg.BAD_PROFILE, "dev_sha384": neg.BAD_PROFILE,
+                "dev_host_role": neg.BAD_PROFILE}
     assert {n: e for n, _, e in got} == expected
     assert all(0 < len(c.der) <= 1024 for c in cases.values())
 
@@ -84,7 +86,8 @@ def test_ca_cases_have_only_their_defect(setup):
 def test_device_cases_have_only_their_defect(setup):
     ca, csr, c = setup
 
-    def ok_except(cert, *, by=True, key=True, subject=True, leaf=True, agree=True, sign=True, sha256=True):
+    def ok_except(cert, *, by=True, key=True, subject=True, leaf=True, agree=True, sign=True, sha256=True,
+                  device_role=True):
         assert signed_by(cert, ca.certificate) == by
         assert (cert.public_key() == csr.public_key()) == key
         assert (cert.subject == csr.subject) == subject
@@ -92,6 +95,7 @@ def test_device_cases_have_only_their_defect(setup):
         assert ku(cert).key_agreement == agree
         assert ku(cert).digital_signature == sign
         assert (cert.signature_algorithm_oid == SignatureAlgorithmOID.ECDSA_WITH_SHA256) == sha256
+        assert (not is_host_certificate(cert)) == device_role
         assert cert.issuer == ca.certificate.subject
 
     ok_except(load(c["dev_other_ca"]), by=False)
@@ -107,6 +111,7 @@ def test_device_cases_have_only_their_defect(setup):
     ok_except(load(c["dev_no_key_agreement"]), agree=False)
     ok_except(load(c["dev_no_digital_signature"]), sign=False)
     ok_except(load(c["dev_sha384"]), sha256=False)
+    ok_except(load(c["dev_host_role"]), device_role=False)
 
 
 def test_key_usage_never_empty(setup):

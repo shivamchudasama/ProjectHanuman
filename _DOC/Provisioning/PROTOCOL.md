@@ -4,6 +4,8 @@ This is the contract between the firmware in `_ASW` (module [`_PROV`](../../_ASW
 
 There are two provisioners: the **Provisioning** tab of the PC GUI in [_TOOLS/BleHostGUI](../../_TOOLS/BleHostGUI/README.md), and the `provision` command of [setu_client.py](../../_TOOLS/BleHostGUI/setu_client.py). Both use [blehost/protocols/provisioning.py](../../_TOOLS/BleHostGUI/blehost/protocols/provisioning.py). Design, trust model and limitations are in [README.md](README.md).
 
+**Who may provision.** An unprovisioned device takes provisioning from any host that connects. It advertises only while its host window is open: a press of DK Button 3. Once provisioned, the device serves only its trusted host ([../HostAuth/PROTOCOL.md §2](../HostAuth/PROTOCOL.md#2-the-gate)). Every message of this range except GET_STATUS, DEPROVISION included, needs that host. A refused short message is answered with REFUSED (`0x66`), a refused transfer with a rejected START.
+
 The key, the CSR and, once the device is provisioned, both certificates persist across resets in the device's Internal Trusted Storage (ITS). Provisioning is **one-time**: a provisioned device refuses another run until it is wiped, by the DEPROVISION message (§3) or by holding Button 0 on the DK. A wipe destroys the key, the CSR and both certificates and makes a fresh key and CSR, as on a chip-erased device. The device also logs each certificate on the serial terminal (§8).
 
 ## 1. Roles and services
@@ -91,7 +93,7 @@ A provisioner MUST treat an unknown status as a failure.
 | CA_OK | DEV_CERT verified, storing failed | Remove whatever was stored; RESULT INTERNAL | CA_OK |
 | CA_OK | DEV_CERT rejected | RESULT with the reason | CA_OK |
 | PROVISIONED | CSR_REQ, CA_CERT, DEV_CERT | RESULT BAD_STATE (one-time provisioning) | PROVISIONED |
-| any | DEPROVISION or Button 0 held (default 5 s) | Forget the trust anchor; remove both certificates, the key and the CSR; generate a fresh key and CSR; delete every pairing bond ([../Pairing/PROTOCOL.md §4](../Pairing/PROTOCOL.md#4-states)). Refused (BAD_STATE) while the CSR is being sent, a certificate is being received or verified, or a pairing runs | KEY_READY (NO_KEY if no key could be made) |
+| any | DEPROVISION or Button 0 held (default 5 s) | Forget the trust anchor; remove both certificates, the key and the CSR; generate a fresh key and CSR; delete every bond, the pairing peer's ([../Pairing/PROTOCOL.md §4](../Pairing/PROTOCOL.md#4-states)) and the trusted host's ([../HostAuth/PROTOCOL.md §5](../HostAuth/PROTOCOL.md#5-forgetting-the-host)). Over BLE, only the trusted host may send DEPROVISION. Refused (BAD_STATE) while the CSR is being sent, a certificate is being received or verified, or a pairing runs | KEY_READY (NO_KEY if no key could be made) |
 | CA_OK | Reset | The CA was in RAM only | KEY_READY |
 
 A disconnect changes no state: a provisioner can send the CA in one connection and the device certificate in the next. The button wipe sends no RESULT.

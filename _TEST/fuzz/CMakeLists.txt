@@ -105,6 +105,14 @@ add_fuzz_target(fuzz_uds_job
    SOURCES fuzz_uds_job.c ${SHIM_DIR}/fs_sim.c
    INCLUDES ${UDS_INCLUDES})
 
+# Host authentication: what an untrusted host sends, and the link events
+# (stubs of test_host_auth.c)
+add_fuzz_target(fuzz_host_auth
+   SOURCES fuzz_host_auth.c
+   INCLUDES ${ASW_DIR}/_HOST_AUTH ${ASW_DIR}/_PROV ${ASW_DIR}/_SETU_SVC ${ASW_DIR}/_CSR
+      ${ASW_DIR}/_DEVICE_CERT ${TEST_DIR}/shim/psa_stub ${SETU_INCLUDES}
+   DEFINES CONFIG_BT_GATT_CLIENT)
+
 # UDS client: ECU responses off the CAN bus, scripted transport (sim_uds_tp.h)
 add_fuzz_target(fuzz_uds_client
    SOURCES fuzz_uds_client.c

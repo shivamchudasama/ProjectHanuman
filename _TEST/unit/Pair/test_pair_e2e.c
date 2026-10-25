@@ -40,6 +40,10 @@ const struct bt_gatt_attr *gstpt_SETUSvc_Init(void) { return &sst_ctrlAttr; }
 struct bt_conn *gstpt_BLE_GetHostConn(void) { return &sst_conn2; }
 void gv_BLE_RefreshAdv(void) {}
 
+/* _HOST_AUTH: the host link is the trusted host; it holds no bond here */
+bool gb_HostAuth_IsTrustedConn(const struct bt_conn *stpt_conn) { return stpt_conn == &sst_conn2; }
+bool gb_HostAuth_IsHostAddr(const bt_addr_le_t *stpt_addr) { (void)stpt_addr; return false; }
+
 /* Addresses: this device (peripheral) and the peer device on sst_conn */
 static bt_addr_le_t sst_own;
 static bt_addr_le_t sst_peerDev;
