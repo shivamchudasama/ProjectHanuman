@@ -33,6 +33,17 @@ Usage:
     python setu_client.py uds unlock --level 1 --algo BENCH_XOR
     python setu_client.py uds status | uds abort
     python setu_client.py flash APP1.BIN --profile ../EcuSim/profiles/sim.json
+    python setu_client.py hostcert "Service laptop" [--ca DIR] [--host DIR] [--validity 730]
+    python setu_client.py auth --name "ProjectHanuman" [--host DIR]
+    python setu_client.py authstatus --name "ProjectHanuman"
+
+A provisioned device serves only its one trusted host (_DOC/HostAuth/PROTOCOL.md):
+hostcert issues this PC a host credential from the CA (--host: where it is kept),
+auth authenticates the PC with it and pairs (LE SC passkey entry; Windows), and
+authstatus reads the device's host state. The device advertises for a host only
+while its host window is open (a press of DK Button 3; held 3 s, it forgets the
+bonded host first). Every other command needs the trusted host on a provisioned
+device; Windows re-encrypts its link with the stored keys.
 
 hex is the upload the project firmware in _ASW accepts (_DOC/HexUpload/PROTOCOL.md);
 with --store NAME the device also stores it as the file /FLASH_DISK:/FW/NAME on its
@@ -526,6 +537,75 @@ async def deprovision(args):
           f"key SHA-256 {st.pubkey_sha256.hex()[:16]}...")
 
 
+def host_cert(args):
+    """Issue a host credential from the CA (no device needed)."""
+    from blehost.pki.authority import DEFAULT_FOLDER, CaError, CertificateAuthority
+    from blehost.pki.host import DEFAULT_FOLDER as HOST_FOLDER, HostError
+
+    if not args.arg:
+        sys.exit("hostcert NAME: give the host's name")
+    try:
+        cred = CertificateAuthority.load(args.ca or DEFAULT_FOLDER).issue_host(
+            args.arg, args.host or HOST_FOLDER, args.validity)
+    except (CaError, HostError, ValueError, OSError) as e:
+        sys.exit(f"hostcert: {e}")
+    print(f"host credential for {cred.name} in {cred.folder} (SHA-256 {cred.fingerprint[:23]}...); "
+          "keep the folder private: it holds the host key")
+
+
+async def host_auth(args, status_only: bool = False):
+    """Authenticate this PC to the device and bond with it (auth), or read the
+    device's host state (authstatus)."""
+    from bleak import BleakClient
+
+    from blehost.core import winrt_pairing
+    from blehost.core.gatt_server import PcGattServer
+    from blehost.pki.host import DEFAULT_FOLDER as HOST_FOLDER, HostCredential, HostError
+    from blehost.protocols import host_auth as ha
+
+    cred = None
+    if not status_only:
+        try:
+            cred = HostCredential.load(args.host or HOST_FOLDER)
+        except HostError as e:
+            sys.exit(f"auth: {e} (issue one with: hostcert NAME)")
+        print(f"host {cred.name}")
+    # Publish the PC's service before connecting: the device sends CHALLENGE to it
+    pc = PcGattServer(args.base, log=print) if not status_only else None
+    if pc is not None:
+        try:
+            await pc.start()
+        except Exception as e:
+            sys.exit(f"PC SETU service not available: {e}")
+
+    target = await find_device(args.address, args.name)
+    try:
+        async with BleakClient(target, disconnected_callback=lambda _c: pc and pc.link_lost()) as client:
+            setu_cli = SETUClient(client, args.base)
+            await client.start_notify(setu_cli.ctrl_uuid, setu_cli.on_notify)
+
+            async def pair_it(pk):
+                level = await winrt_pairing.pair_with_pin(client, pk, log=print)
+                print(f"paired ({level})")
+
+            session = ha.HostAuthSession(setu_cli, pc.receiver if pc else None, cred, pair=pair_it,
+                                         log=print, step=lambda t: print(f"- {t}"))
+            try:
+                if status_only:
+                    st = await session.get_status()
+                else:
+                    await session.run()
+                    st = await session.get_status()
+            except (ha.HostAuthError, winrt_pairing.PairingFailed, winrt_pairing.PairingUnavailable) as e:
+                sys.exit(f"{args.command}: {e}")
+    finally:
+        if pc is not None:
+            await pc.stop()
+    window = ", host window open" if st.window_open else ""
+    bond = ", a host is bonded" if st.host_bonded else ""
+    print(f"device: {st.state_name}{window}{bond}")
+
+
 async def fs_command(args):
     """The device's file commands (the FileSystemPoC's UART test harness, over BLE)."""
     from bleak import BleakClient
@@ -610,11 +690,13 @@ async def main():
 
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=["ping", "send", "caps", "hex", "provision", "deprovision",
-                                        "pair", "pairstatus", "unpair", "fs", "uds", "flash"])
+                                        "pair", "pairstatus", "unpair", "fs", "uds", "flash",
+                                        "hostcert", "auth", "authstatus"])
     ap.add_argument("arg", nargs="?", help="send: size in bytes (default 20000); hex: .hex file; "
                                            "fs: mkdir|cd|openr|openw|write|read|ls|delfile|deldir|"
                                            "close|abort|get|put|shell; uds: target|req|unlock|status|"
-                                           "abort; flash: the stored file's name")
+                                           "abort; flash: the stored file's name; hostcert: the "
+                                           "host's name")
     ap.add_argument("rest", nargs="*", help="fs: the command's operands; uds req: the request (hex)")
     ap.add_argument("--profile", help="uds target, flash: JSON profile (target and flash sequence)")
     ap.add_argument("--functional", action="store_true", help="uds req: send to the functional ID")
@@ -624,8 +706,10 @@ async def main():
                     help="hex: also store the upload as the file /FLASH_DISK:/FW/NAME")
     ap.add_argument("--hex", dest="hex_data", metavar="HEX", help="fs write: data as hex")
     ap.add_argument("--from", dest="from_file", metavar="FILE", help="fs write: data from a file")
-    ap.add_argument("--ca", help="provision: CA folder (default: the GUI's)")
-    ap.add_argument("--validity", type=int, default=365, help="provision: device certificate days")
+    ap.add_argument("--ca", help="provision, hostcert: CA folder (default: the GUI's)")
+    ap.add_argument("--host", help="auth, hostcert: host credential folder (default: the GUI's)")
+    ap.add_argument("--validity", type=int, default=365,
+                    help="provision: device certificate days; hostcert: host certificate days")
     ap.add_argument("--out", help="provision: write the device certificate (PEM) here")
     ap.add_argument("--negative", action="store_true",
                     help="provision: wipe the device if needed, send the certificates it "
@@ -654,6 +738,12 @@ async def main():
             sys.exit(f"--store: '{args.store}' is not a valid file name (1..{FILE_NAME_MAX} of "
                      "A-Z a-z 0-9 . _ -)")
 
+    if args.command == "hostcert":
+        host_cert(args)
+        return
+    if args.command in ("auth", "authstatus"):
+        await host_auth(args, status_only=args.command == "authstatus")
+        return
     if args.command == "provision":
         await provision(args)
         return

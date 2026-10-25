@@ -62,9 +62,11 @@
 /*                              EXTERN FUNCTIONS                              */
 /*                                                                            */
 /******************************************************************************/
-// All functions are blocking (ECDSA verify) and not thread safe: call them from
-// one thread only (the provisioning thread). None of them checks the validity
-// period, as the device has no wall clock.
+// All functions are blocking (ECDSA verify) and not thread safe: one caller at a
+// time. Their callers exclude each other by state: provisioning needs an
+// unprovisioned device, host authentication a provisioned device with an
+// untrusted host link, pairing a run started by the trusted host. None of them
+// checks the validity period, as the device has no wall clock.
 extern DeviceCertStatus_E ge_VerifyCACertificate(const uint8_t *u8pt_der, size_t t_len);
 extern DeviceCertStatus_E ge_VerifyOwnDeviceCertificate(const uint8_t *u8pt_der,
    size_t t_len);
@@ -72,6 +74,8 @@ extern DeviceCertStatus_E ge_VerifyStoredDeviceCertificate(const uint8_t *u8pt_d
    size_t t_len);
 extern DeviceCertStatus_E ge_VerifyRemoteDeviceCertificate(const uint8_t *u8pt_der,
    size_t t_len, psa_key_id_t *tpt_remotePubKeyID);
+extern DeviceCertStatus_E ge_VerifyHostCertificate(const uint8_t *u8pt_der,
+   size_t t_len, psa_key_id_t *tpt_hostPubKeyID);
 extern bool gb_IsTrustAnchorSet(void);
 extern void gv_ClearTrustAnchor(void);
 

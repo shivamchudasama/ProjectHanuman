@@ -549,3 +549,25 @@ def test_fs_shell(fsbleak, monkeypatch, capsys):
     cli(monkeypatch, "fs", "shell", "--name", "dev")
     out = capsys.readouterr().out
     assert "Type 'help'" in out and "[FILE] /FLASH_DISK:/FW/x (3 bytes)" in out
+
+
+# ---- host authentication -----------------------------------------------------------------
+def test_hostcert_issues_a_credential(bleak, monkeypatch, capsys, tmp_path):
+    from blehost.pki.authority import CertificateAuthority
+    from blehost.pki.host import HostCredential
+
+    ca = CertificateAuthority.create(str(tmp_path / "ca"), {"CN": "CLI CA"})
+    host = str(tmp_path / "host")
+    cli(monkeypatch, "hostcert", "Bench PC", "--ca", ca.folder, "--host", host, "--validity", "10")
+    out = capsys.readouterr().out
+    assert "host credential for CN=Bench PC" in out and "keep the folder private" in out
+    assert HostCredential.load(host).ca_certificate == ca.certificate
+    with pytest.raises(SystemExit, match="already exists"):
+        cli(monkeypatch, "hostcert", "Again", "--ca", ca.folder, "--host", host)
+    with pytest.raises(SystemExit, match="give the host's name"):
+        cli(monkeypatch, "hostcert", "--ca", ca.folder, "--host", str(tmp_path / "h2"))
+
+
+def test_auth_needs_a_credential(bleak, monkeypatch, tmp_path):
+    with pytest.raises(SystemExit, match="issue one with: hostcert NAME"):
+        cli(monkeypatch, "auth", "--host", str(tmp_path / "none"))

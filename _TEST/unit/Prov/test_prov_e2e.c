@@ -41,6 +41,7 @@ void gv_BLE_RefreshAdv(void) {}
 /* _PAIR: no pairing runs here */
 bool gb_Pair_IsRunning(void) { return false; }
 void gv_Pair_ForgetBonds(void) {}
+void gv_HostAuth_Forget(void) {}
 
 /* _CSR: the vector's CSR is this device's CSR; "ITS" is a few flags */
 CSRData_T gst_CSRData;

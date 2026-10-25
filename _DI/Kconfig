@@ -84,9 +84,8 @@ config FS_CMD
 	default y
 	help
 	  Lets the host (GUI Files page, setu_client.py fs) create, list,
-	  read, write and delete files on the external flash. Like the hex
-	  upload, it runs on the unauthenticated host link, so turn it off in
-	  production builds.
+	  read, write and delete files on the external flash. Only the trusted
+	  host reaches it (host authentication).
 
 endmenu
 
@@ -109,6 +108,55 @@ config PAIR_CONNECT_TIMEOUT_MS
 	  The peripheral advertises directed to the central, and the central
 	  scans for the peripheral, for at most this long before the run fails
 	  with error TIMEOUT.
+
+endmenu
+
+menu "Host authentication"
+
+config HOST_AUTH_WINDOW_MS
+	int "How long the host window stays open (ms)"
+	default 120000
+	range 10000 3600000
+	help
+	  A press of DK Button 3 opens the host window: the device advertises
+	  (undirected, connectable) for this long, or until a host connects.
+	  Outside the window the device does not advertise for hosts.
+
+config HOST_AUTH_GRACE_MS
+	int "Window after the trusted host's link is lost (ms)"
+	default 60000
+	range 0 600000
+	help
+	  When the trusted host's link drops, the window opens for this long
+	  without a button press, so the host can reconnect (for instance to
+	  follow a flash job).
+
+config HOST_AUTH_FORGET_HOLD_MS
+	int "Hold time of Button 3 that forgets the host (ms)"
+	default 3000
+	range 1000 60000
+	help
+	  Holding DK Button 3 this long deletes the bonded host (bond, record,
+	  link) and opens the window for a new host. A shorter press only opens
+	  the window.
+
+config HOST_AUTH_TIMEOUT_MS
+	int "Time limit of the handshake and its pairing (ms)"
+	default 30000
+	range 5000 600000
+	help
+	  From HELLO until the host is bonded and trusted. A handshake that
+	  takes longer fails with TIMEOUT and the host link is dropped.
+
+config HOST_AUTH_BOOT_WINDOW
+	bool "Open the host window once at boot"
+	help
+	  For bench and HIL images without anyone to press the button: the
+	  window opens after every reset. Leave it off in the field.
+
+config HOST_AUTH_STACK_SIZE
+	int "Host authentication thread stack size"
+	default 6144
 
 endmenu
 
@@ -285,6 +333,40 @@ config UDS_JOB_PRIORITY
 	  Below the CAN interface (6), above the File System Manager (10).
 
 endif # UDS
+
+endmenu
+
+menu "Watchdog"
+
+config APP_WDT
+	bool "Application watchdog (_ASW/_WDT)"
+	default y
+	depends on TASK_WDT && HWINFO
+	help
+	  Logs the reset cause at boot, starts the task watchdog with the
+	  hardware watchdog (alias watchdog0) as fallback, and feeds one
+	  channel from a thread at the lowest application priority: a hang,
+	  interrupts held off or a starved CPU for longer than
+	  APP_WDT_TIMEOUT_MS reset the device.
+
+if APP_WDT
+
+config APP_WDT_TIMEOUT_MS
+	int "Watchdog timeout (ms)"
+	default 8000
+	range 1000 60000
+	help
+	  Time without a feed before the device resets. Long enough for the
+	  slowest legitimate CPU-bound step (key generation, the CSR, an X.509
+	  verification); the file system and UDS waits block and let the
+	  supervisor run.
+
+config APP_WDT_FEED_MS
+	int "Supervisor feed period (ms)"
+	default 1000
+	range 100 30000
+
+endif # APP_WDT
 
 endmenu
 

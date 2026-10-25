@@ -14,7 +14,7 @@
  *                statics, so one process can see only one initialization. The
  *                default run has a working init; the init failures run as
  *                separate CTest entries, selected by an argument:
- *                  --init=huk-present | huk-fail | settings-fail | crypto-fail
+ *                  --init=huk-present | huk-missing | settings-fail | crypto-fail
  *
  * @date          02/10/2026
  * @author        Shivam Chudasama [SC]
@@ -27,8 +27,13 @@
 #define CONFIG_CSR_SUBJ_L                    "Pune"
 #define CONFIG_CSR_SUBJ_O                    "Test Organisation"
 #define CONFIG_CSR_SUBJ_OU                   "Test Unit"
-#define CONFIG_TRUSTED_STORAGE_BACKEND_AEAD_KEY_DERIVE_FROM_HUK 1
-#define CONFIG_TRUSTED_STORAGE_STORAGE_BACKEND_SETTINGS 1
+/* The storage configuration of the firmware build (zephyr/.config): Zephyr's
+   secure storage on settings, its key from the HUK library, the HUK written by
+   NCS during psa_crypto_init() */
+#define CONFIG_SECURE_STORAGE_ITS_STORE_IMPLEMENTATION_SETTINGS 1
+#define CONFIG_SECURE_STORAGE_ITS_TRANSFORM_AEAD_KEY_PROVIDER_HUK_LIBRARY 1
+#define CONFIG_HW_UNIQUE_KEY 1
+#define CONFIG_HW_UNIQUE_KEY_WRITE_ON_CRYPTO_INIT 1
 
 #include "CSR_Generator.c"
 #include "unity.h"
@@ -37,21 +42,13 @@
 /*  Stubs: HUK, settings, PSA crypto init                                     */
 /******************************************************************************/
 static bool sb_hukWritten;
-static int si_hukWriteRet;
-static uint32_t su32_hukWrites;
+static bool sb_cryptoWritesHuk;               /* NCS writes a missing HUK in crypto init */
 static int si_settingsRet;
 static uint32_t su32_settingsInits;
 static psa_status_t st_cryptoInitRet;
 static uint32_t su32_cryptoInits;
 
 bool hw_unique_key_are_any_written(void) { return sb_hukWritten; }
-
-int hw_unique_key_write_random(void)
-{
-   su32_hukWrites++;
-   if (si_hukWriteRet == HW_UNIQUE_KEY_SUCCESS) { sb_hukWritten = true; }
-   return si_hukWriteRet;
-}
 
 int settings_subsys_init(void)
 {
@@ -62,6 +59,7 @@ int settings_subsys_init(void)
 psa_status_t psa_crypto_init(void)
 {
    su32_cryptoInits++;
+   if ((st_cryptoInitRet == PSA_SUCCESS) && sb_cryptoWritesHuk) { sb_hukWritten = true; }
    return st_cryptoInitRet;
 }
 
@@ -322,20 +320,19 @@ void setUp(void)
 void tearDown(void) {}
 
 /******************************************************************************/
-/*  Initialization (default run: HUK not yet written, everything succeeds)    */
+/*  Initialization (default run: first boot, crypto init writes the HUK)      */
 /******************************************************************************/
-static void test_InitWritesHukThenSettingsThenCryptoOnce(void)
+static void test_InitRunsSettingsThenCryptoOnceAndFindsTheHuk(void)
 {
    TEST_ASSERT_EQUAL_INT(PSA_SUCCESS, gt_InitCryptoStorage());
-   TEST_ASSERT_EQUAL_UINT32(1U, su32_hukWrites);
    TEST_ASSERT_EQUAL_UINT32(1U, su32_settingsInits);
    TEST_ASSERT_EQUAL_UINT32(1U, su32_cryptoInits);
-   TEST_ASSERT_NOT_NULL(gcpt_SimLogFind("Trusted storage HUK provisioned successfully"));
+   TEST_ASSERT_TRUE(sb_hukWritten);
+   TEST_ASSERT_NULL(gcpt_SimLogFind("No hardware unique key"));
 
    // Later calls return the first result without running anything again
    TEST_ASSERT_EQUAL_INT(PSA_SUCCESS, gt_InitCryptoStorage());
    gv_GenerateOrLoadCSR();
-   TEST_ASSERT_EQUAL_UINT32(1U, su32_hukWrites);
    TEST_ASSERT_EQUAL_UINT32(1U, su32_settingsInits);
    TEST_ASSERT_EQUAL_UINT32(1U, su32_cryptoInits);
 }
@@ -747,16 +744,20 @@ static void test_InitFailureIsKeptAndBlocksTheCsr(void)
    gv_GenerateOrLoadCSR();
 
    // Nothing after the failing step runs, and only once
-   TEST_ASSERT_EQUAL_UINT32((strcmp(scpt_initMode, "huk-fail") == 0) ? 0U : 1U, su32_settingsInits);
-   TEST_ASSERT_EQUAL_UINT32((strcmp(scpt_initMode, "crypto-fail") == 0) ? 1U : 0U, su32_cryptoInits);
+   TEST_ASSERT_EQUAL_UINT32(1U, su32_settingsInits);
+   TEST_ASSERT_EQUAL_UINT32((strcmp(scpt_initMode, "settings-fail") == 0) ? 0U : 1U, su32_cryptoInits);
+   if (strcmp(scpt_initMode, "huk-missing") == 0)
+   {
+      TEST_ASSERT_NOT_NULL(gcpt_SimLogFind("No hardware unique key after crypto init"));
+   }
    TEST_ASSERT_EQUAL_UINT32(0U, su32_generates);
    TEST_ASSERT_EQUAL_UINT8(0U, gst_CSRData.u8_isCSRGenerated);
 }
 
-static void test_InitWithHukPresentDoesNotWriteIt(void)
+/** A later boot: the HUK is there before crypto init, which need not write it. */
+static void test_InitWithHukPresentSucceeds(void)
 {
    TEST_ASSERT_EQUAL_INT(PSA_SUCCESS, gt_InitCryptoStorage());
-   TEST_ASSERT_EQUAL_UINT32(0U, su32_hukWrites);
    TEST_ASSERT_EQUAL_UINT32(1U, su32_settingsInits);
    TEST_ASSERT_EQUAL_UINT32(1U, su32_cryptoInits);
 }
@@ -767,7 +768,7 @@ int main(int argc, char **argv)
 
    (void)setvbuf(stdout, NULL, _IONBF, 0);
    sb_hukWritten = false;
-   si_hukWriteRet = HW_UNIQUE_KEY_SUCCESS;
+   sb_cryptoWritesHuk = true;
    si_settingsRet = 0;
    st_cryptoInitRet = PSA_SUCCESS;
    for (i = 1; i < argc; i++)
@@ -779,11 +780,13 @@ int main(int argc, char **argv)
    if (strcmp(scpt_initMode, "huk-present") == 0)
    {
       sb_hukWritten = true;
-      RUN_TEST(test_InitWithHukPresentDoesNotWriteIt);
+      sb_cryptoWritesHuk = false;
+      RUN_TEST(test_InitWithHukPresentSucceeds);
    }
    else if (scpt_initMode[0] != '\0')
    {
-      si_hukWriteRet = (strcmp(scpt_initMode, "huk-fail") == 0) ? -EIO : HW_UNIQUE_KEY_SUCCESS;
+      // huk-missing: crypto init succeeds but leaves no HUK (write failed or disabled)
+      sb_cryptoWritesHuk = (strcmp(scpt_initMode, "huk-missing") != 0);
       si_settingsRet = (strcmp(scpt_initMode, "settings-fail") == 0) ? -EIO : 0;
       st_cryptoInitRet = (strcmp(scpt_initMode, "crypto-fail") == 0) ?
          PSA_ERROR_INSUFFICIENT_MEMORY : PSA_SUCCESS;
@@ -791,7 +794,7 @@ int main(int argc, char **argv)
    }
    else
    {
-      RUN_TEST(test_InitWritesHukThenSettingsThenCryptoOnce);
+      RUN_TEST(test_InitRunsSettingsThenCryptoOnceAndFindsTheHuk);
       RUN_TEST(test_FirstBootGeneratesKeyWithTheDevicePolicy);
       RUN_TEST(test_FirstBootBuildsAndStoresTheCsr);
       RUN_TEST(test_SubjectIsKconfigPlusUuidCommonName);

@@ -41,6 +41,11 @@ def _app_name(t: int) -> str:
     return _APP_TYPES.get(t, (f"app 0x{t:02x}", None))[0]
 
 
+def app_type_name(t: int) -> str:
+    """The registered name of an appType ("app 0xNN" if none)."""
+    return _app_name(t)
+
+
 def decode_frame(data: bytes) -> tuple:
     """One SETU frame -> (kind, summary)."""
     if len(data) < 2:

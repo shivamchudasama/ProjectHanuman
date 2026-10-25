@@ -329,6 +329,90 @@ static void test_RemoteCasesAreRejectedWithoutTheOwnChecks(void)
    }
 }
 
+/******************************************************************************/
+/*  Host certificate (host authentication)                                    */
+/******************************************************************************/
+static void test_HostCertificateImportsItsKey(void)
+{
+   psa_key_id_t t_id = 0;
+   uint8_t u8ar_pub[DEVICE_CERT_P256_PUB_KEY_LEN];
+   size_t t_len = 0;
+
+   sv_SetGoodCa();
+   TEST_ASSERT_EQUAL_INT(eDCS_OK, ge_VerifyHostCertificate(gu8ar_certHost, GU8AR_CERTHOST_LEN, &t_id));
+   TEST_ASSERT_EQUAL_INT(PSA_SUCCESS, psa_export_public_key(t_id, u8ar_pub, sizeof(u8ar_pub), &t_len));
+   TEST_ASSERT_EQUAL_HEX8_ARRAY(gu8ar_certHostPub, u8ar_pub, GU8AR_CERTHOSTPUB_LEN);
+   TEST_ASSERT_EQUAL_INT(PSA_SUCCESS, psa_destroy_key(t_id));
+}
+
+static void test_RolesDoNotMix(void)
+{
+   psa_key_id_t t_id = 0;
+
+   sv_SetGoodCa();
+   // A host certificate is no device certificate, in any check
+   TEST_ASSERT_EQUAL_INT(eDCS_BAD_PROFILE, ge_VerifyRemoteDeviceCertificate(gu8ar_certHost,
+      GU8AR_CERTHOST_LEN, &t_id));
+   TEST_ASSERT_EQUAL_INT(eDCS_BAD_PROFILE, ge_VerifyStoredDeviceCertificate(gu8ar_certHost,
+      GU8AR_CERTHOST_LEN));
+   // A device certificate (no clientAuth) is no host certificate
+   TEST_ASSERT_EQUAL_INT(eDCS_BAD_PROFILE, ge_VerifyHostCertificate(gu8ar_certDev, GU8AR_CERTDEV_LEN, &t_id));
+   TEST_ASSERT_EQUAL_INT(eDCS_BAD_PROFILE, ge_VerifyHostCertificate(gu8ar_certRemote,
+      GU8AR_CERTREMOTE_LEN, &t_id));
+   // Nor is the CA
+   TEST_ASSERT_EQUAL_INT(eDCS_BAD_PROFILE, ge_VerifyHostCertificate(gu8ar_certCa, GU8AR_CERTCA_LEN, &t_id));
+}
+
+static void test_HostOfAnotherCaIsRejected(void)
+{
+   psa_key_id_t t_id = 0;
+
+   sv_SetGoodCa();
+   TEST_ASSERT_EQUAL_INT(eDCS_BAD_SIG, ge_VerifyHostCertificate(gu8ar_certHostByCa2,
+      GU8AR_CERTHOSTBYCA2_LEN, &t_id));
+}
+
+static void test_HostNeedsACaAndAnOutputKey(void)
+{
+   psa_key_id_t t_id = 0;
+
+   gv_ClearTrustAnchor();
+   TEST_ASSERT_EQUAL_INT(eDCS_NOT_CA, ge_VerifyHostCertificate(gu8ar_certHost, GU8AR_CERTHOST_LEN, &t_id));
+   sv_SetGoodCa();
+   TEST_ASSERT_EQUAL_INT(eDCS_INTERNAL, ge_VerifyHostCertificate(gu8ar_certHost, GU8AR_CERTHOST_LEN, NULL));
+   TEST_ASSERT_EQUAL_INT(eDCS_PARSE, ge_VerifyHostCertificate(gu8ar_certHost, GU8AR_CERTHOST_LEN - 1U,
+      &t_id));
+}
+
+static void test_DeviceCasesAreNoHosts(void)
+{
+   uint32_t i;
+
+   sv_SetGoodCa();
+   for (i = 0U; i < CERT_CASE_CNT; i++)
+   {
+      const CertCase_T *c = &gstar_certCases[i];
+      uint8_t u8_expected = c->u8_expected;
+      psa_key_id_t t_id = 0;
+      DeviceCertStatus_E e_got;
+
+      if (c->u8_appType != CERT_APP_DEV) { continue; }
+      // Signed by the CA but without the host role: a profile failure
+      if ((u8_expected == eDCS_KEY_MISMATCH) || (u8_expected == eDCS_SUBJECT_MISMATCH))
+      {
+         u8_expected = eDCS_BAD_PROFILE;
+      }
+      // The device certificate with the host role is a host certificate
+      if (strcmp(c->cpt_name, "dev_host_role") == 0)
+      {
+         u8_expected = eDCS_OK;
+      }
+      e_got = ge_VerifyHostCertificate(c->u8pt_der, c->t_len, &t_id);
+      TEST_ASSERT_EQUAL_HEX8_MESSAGE(u8_expected, (uint8_t)e_got, scpt_Case(c, "host"));
+      if (e_got == eDCS_OK) { TEST_ASSERT_EQUAL_INT(PSA_SUCCESS, psa_destroy_key(t_id)); }
+   }
+}
+
 int main(void)
 {
    int i_ret;
@@ -360,6 +444,11 @@ int main(void)
    RUN_TEST(test_RemoteCertificateImportsItsKey);
    RUN_TEST(test_RemoteNeedsAnOutputKey);
    RUN_TEST(test_RemoteCasesAreRejectedWithoutTheOwnChecks);
+   RUN_TEST(test_HostCertificateImportsItsKey);
+   RUN_TEST(test_RolesDoNotMix);
+   RUN_TEST(test_HostOfAnotherCaIsRejected);
+   RUN_TEST(test_HostNeedsACaAndAnOutputKey);
+   RUN_TEST(test_DeviceCasesAreNoHosts);
    i_ret = UNITY_END();
 
    (void)psa_destroy_key(CSR_DEVICE_SIGNING_KEY_ID);

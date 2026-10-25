@@ -147,7 +147,7 @@ that at once, when UNLOCK or FLASH is checked, before anything is sent.
 | `CONFIG_ISOTP_RX_BUF_COUNT` | 17 | Receive pool for a whole 1 KiB response (17 × 63 bytes) |
 | `CONFIG_ISOTP_ENABLE_CONTEXT_BUFFERS` | n | Sends are blocking from the job thread |
 | `CONFIG_UDS` | y | Builds `_LIB/UdsClient` and `_ASW/_UDS` (needs `CANIF`, `ISOTP`) |
-| `CONFIG_UDS_CMD` | y | UDS over BLE (appTypes 0x50–0x5F). **n in production** (§8) |
+| `CONFIG_UDS_CMD` | y | UDS over BLE (appTypes 0x50–0x5F), the trusted host only (§8) |
 | `CONFIG_UDS_P2_MS`, `CONFIG_UDS_P2STAR_MS` | 150, 5000 | Default P2 / P2* until the ECU gives its own |
 | `CONFIG_UDS_TESTER_PRESENT_MS` | 2000 | Keep-alive period |
 | `CONFIG_UDS_BUSY_RETRIES` | 3 | Repeats after NRC 0x21 |
@@ -218,11 +218,13 @@ STATUS_REQ and follows it to its end.
 
 ## 8. Security
 
-UDS over BLE runs on the **unauthenticated host link**, like the file commands: whoever can
-connect can send any UDS request and flash a connected ECU. The bench build has it on. Build
-production firmware with `CONFIG_UDS_CMD=n` until the host is authenticated (a paired or
-certificate-authenticated host is a later feature). The job engine stays available to on-device
-front-ends.
+UDS over BLE reaches a provisioned device only from its **trusted host**, like the file commands
+([../HostAuth/README.md](../HostAuth/README.md)): a PC with a host certificate of the device's CA,
+bonded at level 4 with the passkey the handshake derived. The trusted host can send any UDS
+request and flash a connected ECU; nobody else can reach the range. `CONFIG_UDS_CMD=n` leaves it
+unregistered for images without UDS over BLE; the job engine stays available to on-device
+front-ends. A trusted host that loses its link during a flash job can reconnect within the grace
+window (60 s) without a button press; the job runs on meanwhile.
 
 OEM seed→key algorithms live in the git-ignored `oem/` folder, but they are compiled into the
 firmware image. Anyone who can read the image can recover them.
@@ -231,8 +233,8 @@ firmware image. Anyone who can read the image can recover them.
 
 On the SPI build, `_ASW/_UDS` takes about 6 KB of flash and 8 KB of RAM: the 2 KiB block buffer,
 the 1 KiB response buffer, the thread and the client. `_LIB/UdsClient` adds 3 KB of flash, and
-ISO-TP its receive pool. The image uses 85 % of the RAM, and 91 % of the 240 KiB on the sQSPI
-build. To save RAM, shrink `CONFIG_UDS_FLASH_BLOCK_MAX` (blocks get smaller, the flash a little
+ISO-TP its receive pool. With host authentication, the image uses 92 % of the RAM, and 98 % of
+the 240 KiB on the sQSPI build. To save RAM, shrink `CONFIG_UDS_FLASH_BLOCK_MAX` (blocks get smaller, the flash a little
 slower) or `CONFIG_UDS_RESPONSE_MAX`.
 
 ## 10. Limitations
@@ -270,6 +272,8 @@ slower) or `CONFIG_UDS_RESPONSE_MAX`.
 - a 301-block transfer (counter wrap) with the data checked;
 - the block cap, bad and busy files, refusals, targets, diagnostic requests, unlock, the
   keep-alive.
+
+`test_uds_udsoncan.py` checks the same `uds_flash` conversation against python-udsoncan, an ISO 14229 implementation from outside the repo: every request is what it encodes, every answer one it accepts. The fuzz targets `fuzz_uds_client` (ECU answers), `fuzz_uds_job` (a cut or corrupted stored file, fuzzed sequence parameters) and `fuzz_uds_cmd` (the BLE messages) are in `_TEST/fuzz`.
 
 On hardware: the manual `hil-uds-tests` job in `ci.yml` (a DK with the click and a USB-CAN adapter
 running the simulator) is a placeholder for §7.

@@ -2,7 +2,8 @@
  * @file          test_router.c
  * @brief         Host unit tests for the SETU appType router
  *                (_ASW/_SETU_SVC/SETURouter.c): registration rules, dispatch of
- *                the Server callbacks by appType range, the appType filter, and
+ *                the Server callbacks by appType range, the appType filter, the
+ *                gate (and the filter overriding it), and
  *                the shared Client (attach on behalf of a module, results back
  *                to it). SETURouter.c is included; the GATT service and both
  *                SETU roles are stubbed.
@@ -126,6 +127,8 @@ void setUp(void)
    su8_routeCnt = 0U;
    sb_isStarted = false;
    gv_SETURouter_ClearFilter();
+   sfpt_admit = NULL;
+   sfpt_refused = NULL;
    si_initRet = 0;
    su32_initCalls = 0U;
    (void)memset(&sst_cfg, 0, sizeof(sst_cfg));
@@ -409,6 +412,122 @@ static void test_FilterLetsAnAcceptedTransferFinish(void)
 }
 
 /******************************************************************************/
+/*  Gate                                                                      */
+/******************************************************************************/
+static uint8_t su8_gateFirst;
+static uint8_t su8_gateLast;
+static uint32_t su32_gateCalls;
+static uint32_t su32_refusedCalls;
+static uint8_t su8_lastRefused;
+
+static bool sb_Gate(uint8_t u8_appType)
+{
+   su32_gateCalls++;
+   return (u8_appType >= su8_gateFirst) && (u8_appType <= su8_gateLast);
+}
+
+static void sv_Refused(uint8_t u8_appType)
+{
+   su32_refusedCalls++;
+   su8_lastRefused = u8_appType;
+}
+
+static void sv_StartGated(SETURouterRefused_F fpt_refused)
+{
+   su8_gateFirst = 0x20U;
+   su8_gateLast = 0x2FU;
+   su32_gateCalls = 0U;
+   su32_refusedCalls = 0U;
+   su8_lastRefused = 0U;
+   TEST_ASSERT_EQUAL_INT(0, gi_SETURouter_SetGate(sb_Gate, fpt_refused));
+   sv_StartTwoModules();
+}
+
+static void test_GateRefusesTransfersAndShortMessages(void)
+{
+   uint8_t u8ar_p[2] = { 9, 9 };
+
+   sv_StartGated(sv_Refused);
+
+   // Refused: neither owner asked, the refusal reported with its type
+   TEST_ASSERT_EQUAL_INT(-ENOTSUP, sst_cfg.fpt_onRxStart(0x10U, 5U));
+   TEST_ASSERT_EQUAL_UINT32(0U, sst_a.u32_start);
+   TEST_ASSERT_EQUAL_UINT32(1U, su32_refusedCalls);
+   TEST_ASSERT_EQUAL_HEX8(0x10U, su8_lastRefused);
+   sst_cfg.fpt_onRxShort(0x10U, u8ar_p, 2U);
+   TEST_ASSERT_EQUAL_UINT32(0U, sst_a.u32_short);
+   TEST_ASSERT_EQUAL_UINT32(2U, su32_refusedCalls);
+
+   // Admitted: routed as before, nothing reported
+   TEST_ASSERT_EQUAL_INT(0, sst_cfg.fpt_onRxStart(0x2FU, 5U));
+   sst_cfg.fpt_onRxShort(0x20U, u8ar_p, 2U);
+   TEST_ASSERT_EQUAL_UINT32(1U, sst_b.u32_start);
+   TEST_ASSERT_EQUAL_UINT32(1U, sst_b.u32_short);
+   TEST_ASSERT_EQUAL_UINT32(2U, su32_refusedCalls);
+
+   // The gate follows its owner's state at each call
+   su8_gateFirst = 0x00U;
+   su8_gateLast = 0xEFU;
+   TEST_ASSERT_EQUAL_INT(0, sst_cfg.fpt_onRxStart(0x10U, 5U));
+   TEST_ASSERT_EQUAL_UINT32(1U, sst_a.u32_start);
+}
+
+static void test_GateWithoutRefusedHook(void)
+{
+   uint8_t u8ar_p[1] = { 0 };
+
+   sv_StartGated(NULL);
+   TEST_ASSERT_EQUAL_INT(-ENOTSUP, sst_cfg.fpt_onRxStart(0x10U, 5U));
+   sst_cfg.fpt_onRxShort(0x10U, u8ar_p, 1U);
+   TEST_ASSERT_EQUAL_UINT32(0U, sst_a.u32_start + sst_a.u32_short);
+   TEST_ASSERT_EQUAL_UINT32(0U, su32_refusedCalls);
+}
+
+static void test_FilterOverridesTheGate(void)
+{
+   uint8_t u8ar_p[1] = { 0 };
+
+   sv_StartGated(sv_Refused);
+   gv_SETURouter_SetFilter(0x10U, 0x10U);
+
+   // The filter alone decides: the gate is not asked, its refusals not reported
+   TEST_ASSERT_EQUAL_INT(0, sst_cfg.fpt_onRxStart(0x10U, 5U));
+   TEST_ASSERT_EQUAL_INT(-ENOTSUP, sst_cfg.fpt_onRxStart(0x20U, 5U));
+   sst_cfg.fpt_onRxShort(0x20U, u8ar_p, 1U);
+   TEST_ASSERT_EQUAL_UINT32(0U, su32_gateCalls);
+   TEST_ASSERT_EQUAL_UINT32(0U, su32_refusedCalls);
+   TEST_ASSERT_EQUAL_UINT32(0U, sst_b.u32_start + sst_b.u32_short);
+
+   // Cleared: the gate applies again
+   gv_SETURouter_ClearFilter();
+   TEST_ASSERT_EQUAL_INT(-ENOTSUP, sst_cfg.fpt_onRxStart(0x10U, 5U));
+   TEST_ASSERT_EQUAL_UINT32(1U, su32_refusedCalls);
+}
+
+static void test_GateLetsAnAcceptedTransferFinish(void)
+{
+   uint8_t u8_d = 0U;
+
+   sv_StartGated(sv_Refused);
+   su8_gateFirst = 0x10U;
+   TEST_ASSERT_EQUAL_INT(0, sst_cfg.fpt_onRxStart(0x10U, 1U));
+   // The gate closes mid-transfer: data and result still reach the owner
+   su8_gateFirst = 0x20U;
+   TEST_ASSERT_EQUAL_INT(0, sst_cfg.fpt_onRxData(0x10U, 0U, &u8_d, 1U));
+   sst_cfg.fpt_onRxDone(0x10U, eBS_OK, 1U);
+   TEST_ASSERT_EQUAL_UINT32(1U, sst_a.u32_data);
+   TEST_ASSERT_EQUAL_UINT32(1U, sst_a.u32_done);
+}
+
+static void test_SetGateAfterStartIsRefused(void)
+{
+   sv_StartTwoModules();
+   TEST_ASSERT_EQUAL_INT(-EALREADY, gi_SETURouter_SetGate(sb_Gate, sv_Refused));
+   // No gate installed: everything routed
+   TEST_ASSERT_EQUAL_INT(0, sst_cfg.fpt_onRxStart(0x10U, 1U));
+}
+
+/******************************************************************************/
 /*  Shared Client                                                             */
 /******************************************************************************/
 static void test_StartInitialisesTheClient(void)
@@ -537,6 +656,11 @@ int main(void)
    RUN_TEST(test_FilterRejectsOtherTransfersAtStart);
    RUN_TEST(test_FilterDropsOtherShortMessages);
    RUN_TEST(test_FilterLetsAnAcceptedTransferFinish);
+   RUN_TEST(test_GateRefusesTransfersAndShortMessages);
+   RUN_TEST(test_GateWithoutRefusedHook);
+   RUN_TEST(test_FilterOverridesTheGate);
+   RUN_TEST(test_GateLetsAnAcceptedTransferFinish);
+   RUN_TEST(test_SetGateAfterStartIsRefused);
    RUN_TEST(test_StartInitialisesTheClient);
    RUN_TEST(test_StartClientFailureCanBeRetried);
    RUN_TEST(test_TxResultGoesToTheOwningRange);

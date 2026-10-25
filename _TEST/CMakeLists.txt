@@ -248,7 +248,7 @@ add_unit_test(setu_router
 # Provisioning flow; key/CSR, certificate verification, PSA, router and the
 # SETU roles are stubbed (each has its own test)
 set(PROV_INCLUDES ${ASW_DIR}/_PROV ${ASW_DIR}/_PAIR ${ASW_DIR}/_SETU_SVC ${ASW_DIR}/_CSR ${ASW_DIR}/_DEVICE_CERT
-   ${PSA_STUB_DIR} ${SETU_INCLUDES})
+   ${ASW_DIR}/_HOST_AUTH ${PSA_STUB_DIR} ${SETU_INCLUDES})
 add_unit_test(prov
    SOURCES unit/Prov/test_prov.c
    INCLUDES ${PROV_INCLUDES}
@@ -270,7 +270,7 @@ add_unit_test(prov_button
 # Pairing flow (Pair.c): BT stack, SETU, router, certificate verification,
 # OOB signing, provisioning, LEDs and the service stubbed (calls recorded)
 set(PAIR_INCLUDES ${ASW_DIR}/_PAIR ${ASW_DIR}/_PROV ${ASW_DIR}/_SETU_SVC ${ASW_DIR}/_CSR
-   ${ASW_DIR}/_DEVICE_CERT ${PSA_STUB_DIR} ${SETU_INCLUDES})
+   ${ASW_DIR}/_DEVICE_CERT ${ASW_DIR}/_HOST_AUTH ${PSA_STUB_DIR} ${SETU_INCLUDES})
 add_unit_test(pair
    SOURCES unit/Pair/test_pair.c
    INCLUDES ${PAIR_INCLUDES}
@@ -290,6 +290,28 @@ add_unit_test(pair_oob
    INCLUDES ${ASW_DIR}/_PAIR)
 target_link_libraries(pair_oob PRIVATE tfpsacrypto)
 
+# ---- _ASW/_HOST_AUTH ---------------------------------------------------------
+# Host authentication flow (HostAuth.c): BT stack, router, SETU, certificate
+# verification and the handshake cryptography stubbed (calls recorded)
+set(HOST_AUTH_INCLUDES ${ASW_DIR}/_HOST_AUTH ${ASW_DIR}/_PROV ${ASW_DIR}/_SETU_SVC ${ASW_DIR}/_CSR
+   ${ASW_DIR}/_DEVICE_CERT ${PSA_STUB_DIR} ${SETU_INCLUDES})
+add_unit_test(host_auth
+   SOURCES unit/HostAuth/test_host_auth.c
+   INCLUDES ${HOST_AUTH_INCLUDES}
+   DEFINES CONFIG_BT_GATT_CLIENT)
+
+# The window button: DK library and the HostAuth entry points stubbed, simulated time
+add_unit_test(host_auth_button
+   SOURCES unit/HostAuth/test_host_auth_button.c
+   INCLUDES ${HOST_AUTH_INCLUDES})
+
+# Handshake cryptography (HostAuthCrypto.c) with the real TF-PSA-Crypto, against
+# the handshake made by Python's cryptography (wire.json "host_auth")
+add_unit_test(host_auth_crypto
+   SOURCES unit/HostAuth/test_host_auth_crypto.c ${TFPSA_SHIM_DIR}/tfpsa_host_platform.c
+   INCLUDES ${ASW_DIR}/_HOST_AUTH)
+target_link_libraries(host_auth_crypto PRIVATE tfpsacrypto)
+
 # ---- _ASW/_DEVICE_CERT -------------------------------------------------------
 # Certificate storage (DeviceCert.c) against an in-memory PSA ITS
 add_unit_test(devicecert_store
@@ -304,6 +326,7 @@ add_custom_command(
    OUTPUT ${GEN_DIR}/cert_vectors.h
    COMMAND Python3::Interpreter ${TOOLS_DIR}/gen_cert_vectors.py ${GEN_DIR}/cert_vectors.h
    DEPENDS ${TOOLS_DIR}/gen_cert_vectors.py ${PKI_DIR}/authority.py ${PKI_DIR}/negative.py
+      ${PKI_DIR}/host.py
    COMMENT "Generating cert_vectors.h")
 add_custom_target(cert_vectors DEPENDS ${GEN_DIR}/cert_vectors.h)
 add_unit_test(devicecert_verify
@@ -322,18 +345,30 @@ add_unit_test(csr_der
    SOURCES unit/CSR/test_der.c
    INCLUDES ${ASW_DIR}/_CSR ${PSA_STUB_DIR})
 
-# Key and CSR life cycle (CSR_Generator.c): PSA, ITS, HUK, settings, hardware
+# Key and CSR life cycle (CSR_Generator.c), with the firmware's storage Kconfig: PSA, ITS, HUK, settings, hardware
 # ID and the DER encoder stubbed. Its init result is kept for the life of the
 # process, so each init failure runs as its own CTest entry.
 add_unit_test(csr_generator
    SOURCES unit/CSR/test_csr_generator.c
    INCLUDES ${ASW_DIR}/_CSR ${PSA_STUB_DIR})
-foreach(MODE huk-present huk-fail settings-fail crypto-fail)
+foreach(MODE huk-present huk-missing settings-fail crypto-fail)
    add_test(NAME csr_generator_init_${MODE}
       COMMAND Python3::Interpreter ${TOOLS_DIR}/run_unity.py
          ${REPORT_DIR}/junit/csr_generator_init_${MODE}.xml csr_generator_init_${MODE}
          $<TARGET_FILE:csr_generator> --init=${MODE})
 endforeach()
+
+# ---- _ASW/_WDT ---------------------------------------------------------------
+# The application watchdog: reset cause, task watchdog and its channel, the
+# feed; with the hardware watchdog node (the firmware's overlay) and without
+set(WDT_INCLUDES ${ASW_DIR}/_WDT)
+add_unit_test(wdt
+   SOURCES unit/Wdt/test_wdt.c
+   INCLUDES ${WDT_INCLUDES})
+add_unit_test(wdt_nohw
+   SOURCES unit/Wdt/test_wdt.c
+   INCLUDES ${WDT_INCLUDES}
+   DEFINES SHIM_DT_OKAY_watchdog0=0)
 
 # ---- _ASW/_GENERIX -----------------------------------------------------------
 add_unit_test(helpers
@@ -356,11 +391,13 @@ set(CHECKED_HEADERS
    ${ASW_DIR}/_SETU_SVC/SETUSvc.h ${ASW_DIR}/_SETU_SVC/SETURouter.h ${ASW_DIR}/_DATA_STORE/DataStore.h
    ${ASW_DIR}/_PROV/Prov.h ${ASW_DIR}/_PROV/ProvButton.h
    ${ASW_DIR}/_PAIR/Pair.h ${ASW_DIR}/_PAIR/PairOob.h ${ASW_DIR}/_PAIR/PairSvc.h
+   ${ASW_DIR}/_HOST_AUTH/HostAuth.h ${ASW_DIR}/_HOST_AUTH/HostAuthCrypto.h
+   ${ASW_DIR}/_HOST_AUTH/HostAuthButton.h
    ${ASW_DIR}/_DEVICE_CERT/DeviceCert.h ${ASW_DIR}/_DEVICE_CERT/DeviceCert_Verify.h
    ${ASW_DIR}/_DEVICE_CERT/DeviceCert_Types.h ${ASW_DIR}/_DEVICE_CERT/DeviceCert_Config.h
    ${ASW_DIR}/_CSR/CSR_Generator.h ${ASW_DIR}/_CSR/CSR_Generator_Types.h
    ${ASW_DIR}/_CSR/CSR_Generator_Config.h ${ASW_DIR}/_CSR/DER.h
-   ${ASW_DIR}/_GENERIX/Helpers.h)
+   ${ASW_DIR}/_GENERIX/Helpers.h ${ASW_DIR}/_WDT/Wdt.h)
 set(HDR_INCLUDES "")
 foreach(DIR ${SHIM_DIR} ${SETU_INCLUDES} ${GATT_CB_DIR} ${FSCMD_INCLUDES} ${PROV_INCLUDES} ${ASW_DIR}/_GENERIX
       ${UDS_LIB_DIR} ${ASW_DIR}/_CAN)

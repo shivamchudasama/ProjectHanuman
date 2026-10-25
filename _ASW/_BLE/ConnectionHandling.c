@@ -13,11 +13,16 @@
  *                peripheral side of a link also asks for a short connection
  *                interval.
  *
- *                Undirected advertising runs while there is no host link, or
- *                while _PAIR awaits its bonded central (gb_Pair_AwaitsBondedPeer()),
- *                and only while _PAIR is not using the advertiser. It carries the Pairing
- *                service UUID once the device is provisioned, the SETU
- *                service UUID before.
+ *                Undirected advertising runs only while the host window of
+ *                _HOST_AUTH is open (gb_HostAuth_WindowOpen(): the DK button,
+ *                or a trusted host's grace period) and no host is connected. It
+ *                carries the Pairing service UUID once the device is
+ *                provisioned, the SETU service UUID before. Outside it, a
+ *                bonded peripheral whose central is away
+ *                (gb_Pair_AwaitsBondedPeer()) advertises directed to that
+ *                central only. _PAIR's own directed advertising (a run) has the
+ *                advertiser to itself. The host link's SMP, disconnects and
+ *                security changes also go to _HOST_AUTH.
  * @date          21/02/2026
  * @author        Shivam Chudasama [SC]
  * @copyright     Bajaj Auto Technology Limited (BATL)
@@ -35,6 +40,7 @@
 #include "Pair.h"
 #include "PairSvc.h"
 #include "Prov.h"
+#include "HostAuth.h"
 
 /******************************************************************************/
 /*                                                                            */
@@ -644,16 +650,21 @@ static void sv_MTUExchangeCallback(struct bt_conn *stpt_conn, uint8_t u8_err,
 
 /**
  * @private       sv_StartAdvIfAllowed
- * @brief         Start connectable undirected advertising if nothing stops it:
- *                the stack is ready, no host link is up (unless the bonded
- *                central is awaited), and _PAIR does not use the advertiser.
- *                The data follows the provisioning state.
+ * @brief         Start the advertising that is wanted now, if _PAIR does not
+ *                use the advertiser:
+ *                - the host window is open and no host is connected: connectable
+ *                  undirected advertising, its data following the provisioning
+ *                  state (a bonded central can connect to it too);
+ *                - otherwise, a bonded peripheral whose central is away:
+ *                  connectable directed advertising to that central only;
+ *                - otherwise none.
  * @return        None.
  */
 static void sv_StartAdvIfAllowed(void)
 {
    bool b_hasHost;
    bool b_isProvisioned = (ge_Prov_GetState() == ePS_PROVISIONED);
+   bt_addr_le_t st_peer;
    k_spinlock_key_t t_key;
    int i_err;
 
@@ -661,9 +672,30 @@ static void sv_StartAdvIfAllowed(void)
    b_hasHost = (sstpt_hostConn != NULL);
    k_spin_unlock(&sst_hostLock, t_key);
 
-   // Check if advertising is wanted now
-   if (!sb_btReady || (b_hasHost && !gb_Pair_AwaitsBondedPeer()) || gb_Pair_IsAdvertising())
+   // Check if the stack runs and the advertiser is free
+   if (!sb_btReady || gb_Pair_IsAdvertising())
    {
+      return;
+   }
+
+   // Check if only the bonded central may connect (no window, or a host is here)
+   if (!gb_HostAuth_WindowOpen() || b_hasHost)
+   {
+      // Check if a bonded peripheral awaits its central
+      if (gb_Pair_AwaitsBondedPeer() && gb_Pair_GetBondedPeer(&st_peer))
+      {
+         i_err = bt_le_adv_start(BT_LE_ADV_CONN_DIR_LOW_DUTY(&st_peer), NULL, 0U, NULL, 0U);
+
+         // Check if directed advertising did not start (already running is fine)
+         if ((i_err != 0) && (i_err != -EALREADY))
+         {
+            LOG_ERR("Directed advertising failed to start (err %d)", i_err);
+         }
+         else
+         {
+            LOG_INF("Advertising for the bonded central");
+         }
+      }
       return;
    }
 
@@ -686,7 +718,7 @@ static void sv_StartAdvIfAllowed(void)
       return;
    }
 
-   LOG_INF("Advertising %s", b_isProvisioned ? "for pairing" : "for provisioning");
+   LOG_INF("Advertising for a host (%s)", b_isProvisioned ? "provisioned" : "unprovisioned");
 }
 
 /**
@@ -744,6 +776,9 @@ static void sv_Connected(struct bt_conn *stpt_conn, uint8_t u8_err)
 
    LOG_INF("Host connected");
 
+   // Host authentication takes the link's SMP callbacks before any pairing
+   gv_HostAuth_OnHostConnected(stpt_conn);
+
    // Bind the SETU Server to the host (unless pairing holds it)
    gv_SETUS_OnConnected(stpt_conn);
 
@@ -771,8 +806,9 @@ static void sv_Disconnected(struct bt_conn *stpt_conn, uint8_t reason)
    // Release SETU's binding; a running transfer ends with eBS_DISCONNECTED
    gv_SETU_OnDisconnected(stpt_conn);
 
-   // The pairing module releases its peer link
+   // The pairing module releases its peer link, host authentication its host link
    gv_Pair_OnDisconnected(stpt_conn, reason);
+   gv_HostAuth_OnHostDisconnected(stpt_conn);
 
    sv_CloseLink(stpt_conn);
 
@@ -819,6 +855,7 @@ static void sv_SecurityChanged(struct bt_conn *stpt_conn, bt_security_t e_level,
    LOG_INF("Security level %d (err %d)", (int)e_level, (int)e_err);
 
    gv_Pair_OnSecurityChanged(stpt_conn, (uint8_t)e_level, (uint8_t)e_err);
+   gv_HostAuth_OnSecurityChanged(stpt_conn, (uint8_t)e_level, (uint8_t)e_err);
 }
 
 /**
@@ -954,7 +991,9 @@ void gv_BLEInitStartAdv(void)
       LOG_ERR("Settings load failed (err %d)", i_err);
    }
 
-   // The pairing module learns this device's address and restores its bond
+   // The pairing module learns this device's address and restores its bond;
+   // host authentication keeps its host record only with its bond
+   gv_HostAuth_OnBtReady();
    gv_Pair_OnBtReady();
 
    sb_btReady = true;

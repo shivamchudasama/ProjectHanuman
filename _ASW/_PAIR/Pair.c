@@ -70,6 +70,7 @@
 #include "CSR_Generator.h"
 #include "DeviceCert.h"
 #include "DeviceCert_Verify.h"
+#include "HostAuth.h"
 #include "AppLog.h"
 
 /******************************************************************************/
@@ -95,9 +96,10 @@
  * @def           PAIR_STACK_SIZE
  * @brief         Stack size of the pairing thread: mbedTLS X.509 parsing and
  *                ECDSA verification of the peer certificate run on it, as on
- *                the provisioning thread.
+ *                the provisioning thread. Its deepest static path (X.509 parse
+ *                -> key import -> secure storage) takes about 6.3 KiB (audit F4).
  */
-#define PAIR_STACK_SIZE                      (8192)
+#define PAIR_STACK_SIZE                      (10240)
 
 /**
  * @def           PAIR_PRIORITY
@@ -1354,6 +1356,12 @@ static void sv_BondFound(const struct bt_bond_info *stpt_info, void *vpt_user)
    PairRole_E e_role = b_saved ? (PairRole_E)su8ar_savedBond[0] : ePRL_NONE;
 
    ARG_UNUSED(vpt_user);
+
+   // Check if it is the host's bond (host authentication), not a peer's
+   if (gb_HostAuth_IsHostAddr(&stpt_info->addr))
+   {
+      return;
+   }
 
    // Check if a peer is known already (the record's bond, else the first one)
    if ((atomic_get(&st_state) == ePST_PAIRED) && !b_saved)
@@ -2740,6 +2748,29 @@ bool gb_Pair_AwaitsBondedPeer(void)
 }
 
 /**
+ * @public        gb_Pair_GetBondedPeer
+ * @brief         The bonded peer's address, for the directed advertising of a
+ *                bonded peripheral that awaits its central (any thread).
+ * @param[out]    stpt_addr Receives the address.
+ * @return        true if a peer is bonded (stpt_addr set), false otherwise.
+ */
+bool gb_Pair_GetBondedPeer(bt_addr_le_t *stpt_addr)
+{
+   // Check if a peer is bonded
+   if ((stpt_addr == NULL) || (atomic_get(&st_state) != ePST_PAIRED) ||
+      (atomic_get(&st_bondRole) == ePRL_NONE))
+   {
+      return false;
+   }
+
+   (void)k_mutex_lock(&sst_statusLock, K_FOREVER);
+   *stpt_addr = sst_peerAddr;
+   k_mutex_unlock(&sst_statusLock);
+
+   return true;
+}
+
+/**
  * @public        gb_Pair_IsAdvertising
  * @brief         Whether this module uses the advertiser (directed to the
  *                peer); ConnectionHandling.c then leaves it alone.
@@ -2759,7 +2790,8 @@ bool gb_Pair_IsAdvertising(void)
  * @param[in]     u8pt_data Command.
  * @param[in]     u16_len Command length.
  * @return        0 to accept; BT_GATT_ERR(): WRITE_NOT_PERMITTED from the peer
- *                link, INVALID_ATTRIBUTE_LEN for a wrong length,
+ *                link, AUTHORIZATION from any link but the trusted host's,
+ *                INVALID_ATTRIBUTE_LEN for a wrong length,
  *                VALUE_NOT_ALLOWED for an unknown opcode, role or address type,
  *                PROCEDURE_IN_PROGRESS for START during a run,
  *                INSUFFICIENT_RESOURCES if the event queue is full.
@@ -2773,6 +2805,12 @@ ssize_t gt_Pair_OnControlWrite(struct bt_conn *stpt_conn, const uint8_t *u8pt_da
    if ((stpt_conn != NULL) && (stpt_conn == atomic_ptr_get(&st_peerConn)))
    {
       return BT_GATT_ERR(BT_ATT_ERR_WRITE_NOT_PERMITTED);
+   }
+
+   // Check if the writer is the trusted host (host authentication)
+   if (!gb_HostAuth_IsTrustedConn(stpt_conn))
+   {
+      return BT_GATT_ERR(BT_ATT_ERR_AUTHORIZATION);
    }
 
    // Check if there is an opcode

@@ -141,6 +141,26 @@ static void test_SignsTheTbsWithTheDeviceKey(void)
    TEST_ASSERT_EQUAL_HEX8_ARRAY(gu8ar_vecCsrTbs, &su8ar_out[4], VEC_CSR_TBS_LEN);
 }
 
+/** An INTEGER shorter than DER_INTEGER_LEN must carry its low-order bytes (X.690
+    8.3): 1 -> 02 01 01, 0x80 -> 02 02 00 80. The CSR only encodes version 0,
+    which comes out right either way. */
+static void test_ShortIntegerKeepsItsLowBytes(void)
+{
+   DERValue_T st_v;
+   uint8_t u8ar_buf[8];
+   size_t t_len = 0U;
+
+   memset(&st_v, 0, sizeof(st_v));
+   st_v.e_type = eDT_PRIMITIVE_INTEGER;
+   st_v.u_data.t_integer = 0x80;
+   TEST_ASSERT_EQUAL_INT(PSA_SUCCESS, st_Encode(&st_v, u8ar_buf, sizeof(u8ar_buf), &t_len));
+   TEST_ASSERT_EQUAL_UINT(4U, t_len);
+   // Today the encoder writes the value's top bytes: 02 02 00 00
+   TEST_ASSERT_EQUAL_HEX8(0x00U, u8ar_buf[3]);
+   TEST_IGNORE_MESSAGE("KNOWN BUG: st_Encode writes an INTEGER's high-order bytes, so 0x80 encodes as "
+      "02 02 00 00 and 1 as 02 01 00 (DER.c, eDT_PRIMITIVE_INTEGER)");
+}
+
 static void test_SubjectKeyIdIsSha1OfThePoint(void)
 {
    TEST_ASSERT_EQUAL_INT(PSA_SUCCESS, st_EncodeCsr(VEC_CSR_SUBJ_CNT, sizeof(su8ar_out)));
@@ -305,6 +325,7 @@ int main(int argc, char **argv)
    UNITY_BEGIN();
    RUN_TEST(test_CsrMatchesVector);
    RUN_TEST(test_SignsTheTbsWithTheDeviceKey);
+   RUN_TEST(test_ShortIntegerKeepsItsLowBytes);
    RUN_TEST(test_SubjectKeyIdIsSha1OfThePoint);
    RUN_TEST(test_BufferTooSmall);
    RUN_TEST(test_NullArguments);

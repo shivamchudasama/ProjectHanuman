@@ -20,7 +20,12 @@
 #include "Prov.h"
 #include "ProvButton.h"
 #include "Pair.h"
+#include "HostAuth.h"
+#include "HostAuthButton.h"
 #include "SETURouter.h"
+#if defined(CONFIG_APP_WDT)
+#include "Wdt.h"
+#endif // CONFIG_APP_WDT
 #if defined(CONFIG_UDS)
 #include "UdsJob.h"
 #include "UdsCmd.h"
@@ -51,14 +56,20 @@
 /******************************************************************************/
 /**
  * @public        main
- * @brief         Starts the File System Manager, initializes the SETU users (hex
- *                upload, file commands, provisioning, pairing, UDS), the CAN
+ * @brief         Starts the watchdog, the File System Manager, initializes the SETU users (hex
+ *                upload, file commands, provisioning, pairing, UDS, host
+ *                authentication and its gate), the CAN
  *                interface, the SETU Server and Client, the BLE stack and starts
  *                advertising.
  * @return        0 upon successful execution.
  */
 int main(void)
 {
+#if defined(CONFIG_APP_WDT)
+   // First: log why the device reset, and supervise the rest of the boot
+   (void)gi_Wdt_Init();
+#endif // CONFIG_APP_WDT
+
    // Mount the FAT volume on the external flash (on its own thread; commands
    // submitted before it is mounted wait in its queue)
    (void)gi_FSMGR_Start();
@@ -76,6 +87,11 @@ int main(void)
    // Certificate-based pairing with another device: its appType range, the SMP
    // callbacks and the LED
    (void)gi_Pair_Init();
+
+   // Host authentication: its appType range, the router's gate (only the
+   // trusted host reaches the device), and DK Button 3 for the host window
+   (void)gi_HostAuth_Init();
+   (void)gi_HostAuthButton_Init();
 
 #if defined(CONFIG_CANIF)
    // The CAN / CAN FD controller (MCP2518FD Click): boot configuration, traffic

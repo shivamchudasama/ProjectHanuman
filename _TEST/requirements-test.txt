@@ -9,3 +9,6 @@ Pillow>=10
 # The ECU simulator (_TOOLS/EcuSim) and its tests on python-can's virtual bus; same pins as the tool
 python-can>=4.4
 can-isotp>=2.0
+# An ISO 14229 implementation from outside this repo, the second opinion on the
+# device's UDS conversation (test_uds_udsoncan.py)
+udsoncan>=1.23

@@ -8,13 +8,13 @@ The host tells each device its role and its peer. The two devices connect to eac
 
 | Party | Links | Role on each link |
 |---|---|---|
-| Host | One to each device | Central, GATT client of the Pairing service. **No pairing on this link**: it stays unencrypted |
+| Host | One to each device | Central, GATT client of the Pairing service. Must be each device's **trusted host** ([../HostAuth/PROTOCOL.md](../HostAuth/PROTOCOL.md)): its bonded, level-4 link. CONTROL refuses anyone else |
 | Device chosen as **central** | Host link and peer link | Peripheral to the host; central to the peer: scans for it, connects, starts pairing, writes SECURED; once bonded, reconnects and encrypts |
-| Device chosen as **peripheral** | Host link and peer link | Peripheral to both; advertises **directed** to the central during a run, undirected while its bonded central is away |
+| Device chosen as **peripheral** | Host link and peer link | Peripheral to both; advertises **directed** to the central during a run, and while its bonded central is away |
 
 Both devices are GATT client and server on the peer link: each sends with its SETU Client to the other's SETU Server.
 
-A device holds at most one host link and one peer link. A second host connection is refused, and undirected advertising stops while a host is connected, except on a bonded peripheral whose central is not connected (§4.1).
+A device holds at most one host link and one peer link. A second host connection is refused. Undirected advertising runs only while the device's host window is open and no host is connected ([../HostAuth/PROTOCOL.md §1](../HostAuth/PROTOCOL.md#1-roles-and-links)). A bonded peripheral whose central is not connected advertises directed to it (§4.1).
 
 ## 2. GATT: the Pairing service
 
@@ -47,6 +47,7 @@ The write itself is refused with an ATT error when the command is malformed or c
 | ATT error | When |
 |---|---|
 | `0x03` Write Not Permitted | Written over the peer link: a peer device cannot drive this device |
+| `0x08` Insufficient Authorization | Written over any link but the trusted host's ([../HostAuth/PROTOCOL.md §2](../HostAuth/PROTOCOL.md#2-the-gate)). Right after the bonded host connects, until its link is encrypted, CONTROL is refused too: the reference host retries for 3 s |
 | `0x0D` Invalid Attribute Value Length | No opcode, START not 9 bytes, CANCEL or UNPAIR with a payload |
 | `0x13` Value Not Allowed | Unknown opcode, role not 1 or 2, address type not 0 or 1 |
 | `0xFE` Procedure Already in Progress | START while a run is in progress |
@@ -108,12 +109,12 @@ A bond survives a reset: a provisioned device with a bond starts in PAIRED, with
 
 A device that has paired saves a **bond record**, `[u8 role][7 B peer address]`, in settings (key `pair/peer`) next to the stack's bond. While it is PAIRED with a record and the peer link is down (after a reset, or after the link dropped), it reconnects by itself:
 
-- **Peripheral:** advertises connectable and undirected (the provisioned advertising data, §2), also while a host is connected, and takes a connection from the bonded central as the peer link. A connection from any other device is a host connection, as usual.
+- **Peripheral:** advertises connectable and **directed** to the bonded central (low duty cycle), also while a host is connected, and takes a connection from the bonded central as the peer link. While its host window is open and no host is connected, it advertises undirected instead, which the central accepts too. A connection from any other device is a host connection, as usual.
 - **Central:** scans passively for the peer's address, connects (interval 15 ms, supervision timeout 4 s) and requests security level 4. The stack encrypts with the stored keys; there is no new pairing (pairing outside a run is refused anyway, §5 step 8).
 - Once the link is encrypted at **level 4** with the bonded keys, both devices **blink their LED** (`DK_LED1`, LED0 on the nRF54L15 DK; 500 ms on, 500 ms off) for as long as the link stays up, and turn it off when it drops.
 - A link that does not reach level 4 within 10 s, whose encryption fails (for example, the peer has lost its keys), or that comes up below level 4, is dropped. The central scans again 1 s after the link drops or an attempt fails, for as long as it stays PAIRED.
 - SETU stays with the host on a reconnected link: nothing is exchanged over it here. STATUS stays PAIRED throughout, and is not notified for a reconnection.
-- START, UNPAIR and a wipe stop reconnecting and delete the record. A bond without a record (from older firmware) restores PAIRED with role `0` and is not reconnected; a record without its bond is deleted at boot.
+- START, UNPAIR and a wipe stop reconnecting and delete the record. A bond without a record (from older firmware) restores PAIRED with role `0` and is not reconnected; a record without its bond is deleted at boot. The trusted host's bond (record `hauth/host`, [../HostAuth/PROTOCOL.md §5](../HostAuth/PROTOCOL.md#5-forgetting-the-host)) is never taken for the peer's; UNPAIR leaves it alone.
 
 The LED after the first pairing stays as it was: steady on the peripheral (§5 step 9), off on the central. It turns off when that link drops, and blinks once the pair has reconnected.
 

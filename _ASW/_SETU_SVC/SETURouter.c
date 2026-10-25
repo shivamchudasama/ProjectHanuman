@@ -109,6 +109,19 @@ static bool sb_isStarted = false;
  */
 static atomic_t st_filter = ATOMIC_INIT(0);
 
+/**
+ * @var           sfpt_admit
+ * @brief         Gate consulted while no filter applies (NULL: admit all). Set
+ *                before gi_SETURouter_Start(), read-only afterwards.
+ */
+static SETURouterAdmit_F sfpt_admit = NULL;
+
+/**
+ * @var           sfpt_refused
+ * @brief         Told about each appType the gate refused (may be NULL).
+ */
+static SETURouterRefused_F sfpt_refused = NULL;
+
 #if SETU_ENABLE_CLIENT
 /**
  * @var           st_cliOwner
@@ -161,22 +174,36 @@ static const SETURoute_T *sstpt_FindRoute(uint8_t u8_appType)
 
 /**
  * @private       sb_IsAllowed
- * @brief         Whether the current filter lets an appType through.
+ * @brief         Whether the current filter, or the gate when no filter
+ *                applies, lets an appType through. A gate refusal is reported
+ *                to sfpt_refused.
  * @param[in]     u8_appType Application type.
- * @return        true if no filter applies or the type is inside it.
+ * @return        true if the type is inside the filter, or no filter applies
+ *                and the gate (if any) admits it.
  */
 static bool sb_IsAllowed(uint8_t u8_appType)
 {
    atomic_val_t t_filter = atomic_get(&st_filter);
 
-   // Check if a filter applies
-   if ((t_filter & ROUTER_FILTER_ON) == 0)
+   // Check if a filter applies: it alone decides
+   if ((t_filter & ROUTER_FILTER_ON) != 0)
    {
-      return true;
+      return (u8_appType >= (uint8_t)((t_filter >> 8) & 0xFF)) &&
+         (u8_appType <= (uint8_t)(t_filter & 0xFF));
    }
 
-   return (u8_appType >= (uint8_t)((t_filter >> 8) & 0xFF)) &&
-      (u8_appType <= (uint8_t)(t_filter & 0xFF));
+   // Check if a gate applies and refuses the type
+   if ((sfpt_admit != NULL) && !sfpt_admit(u8_appType))
+   {
+      // Check if the gate's owner wants to know
+      if (sfpt_refused != NULL)
+      {
+         sfpt_refused(u8_appType);
+      }
+      return false;
+   }
+
+   return true;
 }
 
 /**
@@ -191,7 +218,7 @@ static int si_RouteRxStart(uint8_t u8_appType, uint32_t u32_totalLen)
 {
    const SETURoute_T *stpt_route = sstpt_FindRoute(u8_appType);
 
-   // Check if the filter lets this type through on the current link
+   // Check if the filter or the gate lets this type through on the current link
    if (!sb_IsAllowed(u8_appType))
    {
       APP_LOG_WRN("rejected: type 0x%02x filtered", u8_appType);
@@ -270,7 +297,7 @@ static void sv_RouteRxShort(uint8_t u8_appType, const uint8_t *u8pt_data, uint8_
 {
    const SETURoute_T *stpt_route = sstpt_FindRoute(u8_appType);
 
-   // Check if the filter lets this type through on the current link
+   // Check if the filter or the gate lets this type through on the current link
    if (!sb_IsAllowed(u8_appType))
    {
       APP_LOG_WRN("short message type 0x%02x filtered", u8_appType);
@@ -444,6 +471,32 @@ int gi_SETURouter_Start(void)
 
    sb_isStarted = true;
    APP_LOG_INF("SETU server and client ready, %u appType range(s)", su8_routeCnt);
+
+   return 0;
+}
+
+/**
+ * @public        gi_SETURouter_SetGate
+ * @brief         Install the gate consulted for new transfers and short
+ *                messages while no filter applies: a refused transfer is
+ *                rejected at START (as an unknown type), a refused short
+ *                message is dropped, and fpt_refused hears of both. A filter
+ *                (gv_SETURouter_SetFilter()) overrides the gate while it
+ *                applies. Call at start-up, before gi_SETURouter_Start().
+ * @param[in]     fpt_admit Gate, or NULL to admit everything.
+ * @param[in]     fpt_refused Told about refusals (may be NULL).
+ * @return        0 on success, -EALREADY after gi_SETURouter_Start().
+ */
+int gi_SETURouter_SetGate(SETURouterAdmit_F fpt_admit, SETURouterRefused_F fpt_refused)
+{
+   // Check if the router is still being set up
+   if (sb_isStarted)
+   {
+      return -EALREADY;
+   }
+
+   sfpt_admit = fpt_admit;
+   sfpt_refused = fpt_refused;
 
    return 0;
 }

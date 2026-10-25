@@ -77,9 +77,11 @@
 
 /**
  * @def           DS_DUMP_STACK_SIZE
- * @brief         Stack size of the dump thread (it also submits file system messages).
+ * @brief         Stack size of the dump thread. It also submits file system
+ *                messages and notifies RESULT/STORED/FILE through the BT host,
+ *                about 1.8 KiB on its deepest static path (audit F4).
  */
-#define DS_DUMP_STACK_SIZE                   (2048)
+#define DS_DUMP_STACK_SIZE                   (3072)
 
 /**
  * @def           DS_DUMP_PRIORITY

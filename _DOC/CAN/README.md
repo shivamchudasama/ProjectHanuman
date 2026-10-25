@@ -62,7 +62,9 @@ could hold the line low through its driver.
 The overlay deletes the `button_1`, `button_2` and `led_3` nodes and their `sw1`, `sw2` and
 `led3` aliases. NCS's DK library builds its button and LED tables from those nodes, so it
 leaves the pins alone. Button 0 (`DK_BTN1`, the provisioning wipe) and LED0 (`DK_LED1`,
-pairing) keep their indexes. Button 3 becomes `DK_BTN2`, and LED1 and LED2 keep theirs.
+pairing) keep their indexes. Button 3 becomes `DK_BTN2`, the host window button of host
+authentication ([../HostAuth/README.md](../HostAuth/README.md)), and LED1 and LED2 keep theirs
+(LED1, `DK_LED2`, shows the host window).
 
 **Transceiver standby.** The ATA6563's STBY pin must be low for the transceiver to drive
 the bus. The Zephyr shield for this click leaves it alone. If the controller works (the

@@ -119,6 +119,8 @@ REPLY  03 41 0f 04 07                          seq 15 OPENW BUSY
 
 ## 6. Security
 
-Like the hex upload, the file commands run on the unauthenticated host link: anyone who can
-connect can read, write and delete files. They exist for bench work and tests; build production
-firmware with `CONFIG_FS_CMD=n`, which leaves the range unregistered (every CMD is then ignored).
+Like the hex upload, the file commands reach a provisioned device only from its **trusted host**
+([../HostAuth/PROTOCOL.md §2](../HostAuth/PROTOCOL.md#2-the-gate)), a bonded, level-4 link made by
+host authentication. A CMD from any other link is dropped and answered with REFUSED (`0x66`), and
+an unprovisioned device does not take them at all. `CONFIG_FS_CMD=n` still leaves the range
+unregistered (every CMD is then ignored), for images that need no file access over BLE.

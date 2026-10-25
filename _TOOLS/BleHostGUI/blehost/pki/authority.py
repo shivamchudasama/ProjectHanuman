@@ -16,7 +16,10 @@ The profile matches what the device verifies (_ASW/_DEVICE_CERT/DeviceCert_Verif
 X.509 v3, P-256, ecdsa-with-SHA256; the CA is self-signed with CA:TRUE and
 keyCertSign; a device certificate is CA:FALSE and allows digitalSignature
 (pairing signs OOB data with the device key) and keyAgreement, and
-carries the CSR's subject and public key unchanged.
+carries the CSR's subject and public key unchanged. A host certificate
+(issue_host(), for the PC that operates devices: _DOC/HostAuth/PROTOCOL.md) is
+CA:FALSE, digitalSignature and extendedKeyUsage clientAuth, the host role; a
+device CSR asking for an extendedKeyUsage is refused.
 """
 
 import datetime
@@ -29,7 +32,7 @@ from cryptography import x509
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.x509.oid import NameOID, SignatureAlgorithmOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID, SignatureAlgorithmOID
 
 DEFAULT_FOLDER = os.path.join(os.path.expanduser("~"), ".blehost", "ca")
 KEY_FILE, CERT_FILE, DB_FILE, ISSUED_DIR = "ca_key.pem", "ca_cert.pem", "issued.json", "issued"
@@ -204,7 +207,79 @@ class CertificateAuthority:
         if ku is None or not ku.value.key_agreement or not ku.value.digital_signature:
             raise CsrRejected("KeyUsage digitalSignature and keyAgreement are required "
                               "(pairing signs with the key); wipe the device for a new CSR")
+        if x509.ExtendedKeyUsage.oid in exts:
+            # The CSR's extensions are copied: a device must not obtain the host role
+            raise CsrRejected("a device CSR must not ask for extendedKeyUsage "
+                              "(clientAuth marks host certificates)")
         return csr
+
+    def issue_host(self, name: str, folder: str, validity_days: int = 730):
+        """Issue a host certificate and write a host credential to folder.
+
+        The host gets a fresh P-256 key; its certificate is CA:FALSE, KeyUsage
+        digitalSignature (it signs the handshake) and extendedKeyUsage
+        clientAuth, the host role the device requires (ge_VerifyHostCertificate).
+        The folder gets host_key.pem, host_cert.pem and a copy of ca_cert.pem
+        (blehost.pki.host): a laptop in the field needs the credential, not the
+        CA key. Refuses to overwrite a credential. Returns the HostCredential.
+        """
+        from .host import HostCredential, HostError
+        if not name:
+            raise CaError("the host needs a name (CN)")
+        if validity_days < 1:
+            raise CaError("validity must be at least one day")
+        if HostCredential.exists(folder):
+            raise HostError(f"a host credential already exists in {folder}")
+        now = _now()
+        ca = self.certificate
+        if not ca.not_valid_before_utc <= now <= ca.not_valid_after_utc:
+            raise CaError("the CA certificate is not valid now")
+
+        issued = self.issued()
+        for _ in range(MAX_SERIAL_TRIES):
+            serial = x509.random_serial_number()
+            if f"{serial:x}" not in issued:
+                break
+        else:
+            raise CaError("could not find an unused serial number")
+
+        key = ec.generate_private_key(ec.SECP256R1())
+        ca_ski = ca.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value
+        cert = (x509.CertificateBuilder()
+                .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)]))
+                .issuer_name(ca.subject)
+                .public_key(key.public_key())
+                .serial_number(serial)
+                .not_valid_before(now)
+                .not_valid_after(min(now + datetime.timedelta(days=validity_days),
+                                     ca.not_valid_after_utc))
+                .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+                .add_extension(x509.KeyUsage(digital_signature=True, content_commitment=False,
+                                             key_encipherment=False, data_encipherment=False,
+                                             key_agreement=False, key_cert_sign=False, crl_sign=False,
+                                             encipher_only=False, decipher_only=False), critical=True)
+                .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH]), critical=False)
+                .add_extension(x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(ca_ski),
+                               critical=False)
+                .sign(self.key, hashes.SHA256()))
+        cert.verify_directly_issued_by(ca)
+
+        serial_hex = f"{serial:x}"
+        issued[serial_hex] = {
+            "role": "host",
+            "subject": cert.subject.rfc4514_string(),
+            "public_key_sha256": public_key_sha256(cert.public_key()).hex(),
+            "not_before": cert.not_valid_before_utc.isoformat(),
+            "not_after": cert.not_valid_after_utc.isoformat(),
+        }
+        os.makedirs(os.path.join(self.folder, ISSUED_DIR), exist_ok=True)
+        with open(os.path.join(self.folder, ISSUED_DIR, serial_hex + ".pem"), "wb") as f:
+            f.write(cert.public_bytes(serialization.Encoding.PEM))
+        with open(os.path.join(self.folder, DB_FILE), "w") as f:
+            json.dump(issued, f, indent=2)
+        cred = HostCredential(folder, key, cert, ca)
+        cred.save()
+        return cred
 
     def sign_csr(self, csr_der: bytes, validity_days: int = 365) -> IssuedCert:
         """Issue a device certificate for a CSR (see check_csr for the checks).

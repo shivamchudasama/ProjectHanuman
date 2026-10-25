@@ -502,6 +502,7 @@ struct bt_gatt_notify_params
 #define BT_GATT_ERR(e)                     (-(e))
 #define BT_ATT_ERR_WRITE_NOT_PERMITTED     0x03
 #define BT_ATT_ERR_INVALID_OFFSET          0x07
+#define BT_ATT_ERR_AUTHORIZATION           0x08
 #define BT_ATT_ERR_INVALID_ATTRIBUTE_LEN   0x0d
 #define BT_ATT_ERR_UNLIKELY                0x0e
 #define BT_ATT_ERR_INSUFFICIENT_RESOURCES  0x11
@@ -708,11 +709,19 @@ struct bt_conn_pairing_feat
    uint8_t init_key_dist;
    uint8_t resp_key_dist;
 };
+#define BT_PASSKEY_RAND                    0xffffffffU
+/* CONFIG_BT_APP_PASSKEY is assumed on: app_passkey is always a member */
 struct bt_conn_auth_cb
 {
    enum bt_security_err (*pairing_accept)(struct bt_conn *conn,
       const struct bt_conn_pairing_feat *const feat);
+   void (*passkey_display)(struct bt_conn *conn, unsigned int passkey);
+   uint32_t (*app_passkey)(struct bt_conn *conn);
+   void (*passkey_entry)(struct bt_conn *conn);
+   void (*passkey_confirm)(struct bt_conn *conn, unsigned int passkey);
    void (*oob_data_request)(struct bt_conn *conn, struct bt_conn_oob_info *info);
+   void (*cancel)(struct bt_conn *conn);
+   void (*pairing_confirm)(struct bt_conn *conn);
 };
 struct bt_conn_auth_info_cb
 {
@@ -720,6 +729,7 @@ struct bt_conn_auth_info_cb
    void (*pairing_failed)(struct bt_conn *conn, enum bt_security_err reason);
 };
 extern int bt_conn_auth_cb_register(const struct bt_conn_auth_cb *cb);
+extern int bt_conn_auth_cb_overlay(struct bt_conn *conn, const struct bt_conn_auth_cb *cb);
 extern int bt_conn_auth_info_cb_register(struct bt_conn_auth_info_cb *cb);
 extern int bt_conn_auth_cancel(struct bt_conn *conn);
 

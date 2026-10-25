@@ -14,13 +14,16 @@ from blehost.core.gatt_server import PcGattServer
 from blehost.features.ecu import EcuFeature
 from blehost.features.file_system import FileSystemFeature
 from blehost.features.hex_upload import HexUploadFeature
+from blehost.features.host_access import HostAccessFeature
 from blehost.features.pairing import PairingFeature
 from blehost.features.provisioning import ProvisioningFeature
 from blehost.protocols.setu import SETUService
 from blehost.ui.main_window import MainWindow
 
-# Feature pages, in rail order. Add new features here.
-FEATURES = [HexUploadFeature, FileSystemFeature, EcuFeature, ProvisioningFeature, PairingFeature]
+# Feature pages, in rail order. Add new features here. The first is shown after
+# connecting: Host access, since a provisioned device serves only its trusted host.
+FEATURES = [HostAccessFeature, HexUploadFeature, FileSystemFeature, EcuFeature, ProvisioningFeature,
+            PairingFeature]
 
 
 def _dpi_aware():
@@ -36,7 +39,7 @@ def main():
     _dpi_aware()
     ctx = AppContext()
     ctx.services[SETUService.NAME] = SETUService(ctx)
-    # The PC's own SETU service: the device sends to the PC through it (CSR)
+    # The PC's own SETU service: the device sends to the PC through it (CSR, CHALLENGE)
     pc = PcGattServer(ctx.settings.base_uuid, log=lambda t: ctx.log(t, "warn"), tap=ctx.tap)
     ctx.services[PcGattServer.NAME] = pc
     ctx.link.add_disconnect_hook(lambda _link, _reason: pc.link_lost())

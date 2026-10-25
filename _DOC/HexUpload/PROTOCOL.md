@@ -10,8 +10,9 @@ The server does not program its own flash. It buffers each segment in RAM and lo
 |---|---|
 | Device name (scan response) | `ProjectHanuman` (`CONFIG_BT_DEVICE_NAME`) |
 | Advertised service (adv data, 128-bit list) | `B1C00000-16A1-4812-AF35-F3F29A92F6CA` until the device is provisioned; then the Pairing service `B1C10000-…` ([../Pairing/PROTOCOL.md §2](../Pairing/PROTOCOL.md#2-gatt-the-pairing-service)). The SETU service is in the GATT table either way |
+| Advertising | Only while the host window is open: a press of DK Button 3 opens it for 2 minutes ([../HostAuth/PROTOCOL.md §1](../HostAuth/PROTOCOL.md#1-roles-and-links)) |
 | Connections | One host at a time (a second is refused); while pairing, a peer device on a second link |
-| Security | None (open link) |
+| Security | A provisioned device serves only its **trusted host**, a bonded, level-4 link made by host authentication ([../HostAuth/PROTOCOL.md](../HostAuth/PROTOCOL.md)). Hex upload is refused on any other link (§3, the gate). An unprovisioned device accepts provisioning only |
 
 ## 2. GATT table
 
@@ -53,11 +54,14 @@ The device's SETU Server is shared by appType range ([_ASW/_SETU_SVC/SETURouter.
 | `0x30`–`0x3F` | Device pairing (`_PAIR`), between two devices | [../Pairing/PROTOCOL.md](../Pairing/PROTOCOL.md) |
 | `0x40`–`0x4F` | File commands (`_FS_CMD`), when built with `CONFIG_FS_CMD` | [../FileSysManager/PROTOCOL.md](../FileSysManager/PROTOCOL.md) |
 | `0x50`–`0x5F` | UDS over BLE (`_ASW/_UDS`): target, diagnostic requests, unlock, flash jobs; when built with `CONFIG_UDS_CMD` | [../UDS/PROTOCOL.md](../UDS/PROTOCOL.md) |
+| `0x60`–`0x6F` | Host authentication (`_HOST_AUTH`): STATUS, HELLO, CHALLENGE, FINISH, RESULT, REFUSED | [../HostAuth/PROTOCOL.md](../HostAuth/PROTOCOL.md) |
 | others up to `0xEF` | Free | A transfer is refused (§5), a short message is logged and ignored |
 
-A new user of the Server registers a free range with `gi_SETURouter_Register()` before `gi_SETURouter_Start()` and adds it here. The router holds `SETU_ROUTER_MAX_ROUTES` (5) ranges, all used now: a sixth user raises it.
+A new user of the Server registers a free range with `gi_SETURouter_Register()` before `gi_SETURouter_Start()` and adds it here. The router holds `SETU_ROUTER_MAX_ROUTES` (6) ranges, all used now: a seventh user raises it.
 
-While the Server is bound to a peer device for pairing, the router's filter (`gv_SETURouter_SetFilter()`) admits only `0x30`–`0x3F`: any other transfer is refused at START as an unknown type and any other short message is dropped, so a peer device cannot upload hex or reach provisioning.
+**The gate.** While no filter applies, the router asks host authentication's gate (`gi_SETURouter_SetGate()`, `gb_HostAuth_Admits()`) about every new transfer and short message. On a provisioned device, only the trusted host reaches anything but `0x60`–`0x6F` and provisioning's GET_STATUS (`0x20`). On an unprovisioned device, `0x20`–`0x2F` are reachable too. A refused transfer is rejected at START as an unknown type, and a refused short message is dropped and answered with REFUSED (`0x66`) ([../HostAuth/PROTOCOL.md §2](../HostAuth/PROTOCOL.md#2-the-gate)). A transfer already accepted runs to its end.
+
+While the Server is bound to a peer device for pairing, the router's filter (`gv_SETURouter_SetFilter()`) admits only `0x30`–`0x3F`, in place of the gate: any other transfer is refused at START as an unknown type and any other short message is dropped, so a peer device cannot upload hex or reach provisioning.
 
 ## 4. Upload sequence
 

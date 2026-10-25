@@ -251,6 +251,35 @@ class BleLink:
         await self._client.stop_notify(uuid)
 
     # ---- security ----------------------------------------------------------
-    # The PC never pairs with a device: its links stay unencrypted. Device-to-
-    # device pairing is orchestrated over the Pairing service
-    # (protocols/pairing.py, features/pairing.py).
+    # The PC pairs only after host authentication (protocols/host_auth.py), with
+    # LE SC passkey entry and the passkey the handshake derived; it is then the
+    # device's trusted host, and Windows re-encrypts the link with the stored
+    # keys on every later connection. Device-to-device pairing is orchestrated
+    # over the Pairing service (protocols/pairing.py, features/pairing.py).
+    def _require_client(self):
+        if self._client is None:
+            raise RuntimeError("not connected")
+        return self._client
+
+    async def pair_with_pin(self, pin: int) -> str:
+        """Pair with the device, entering pin (core/winrt_pairing.py)."""
+        from . import winrt_pairing
+
+        client = self._require_client()
+        self._info("PAIR", "pairing, passkey entry")
+        level = await winrt_pairing.pair_with_pin(client, pin, log=lambda t: self._log("info", t))
+        self._info("PAIR", f"paired ({level})")
+        return level
+
+    async def unpair(self) -> str:
+        """Forget the device's keys on this PC (the device keeps its own)."""
+        from . import winrt_pairing
+
+        result = await winrt_pairing.unpair(self._require_client())
+        self._info("PAIR", f"keys forgotten on this PC ({result})")
+        return result
+
+    async def is_paired(self) -> bool:
+        from . import winrt_pairing
+
+        return await winrt_pairing.is_paired(self._require_client())

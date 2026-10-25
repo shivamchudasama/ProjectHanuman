@@ -402,6 +402,19 @@ psa_status_t gt_PairOob_Verify(psa_key_id_t t_peerKey, const uint8_t *u8pt_frame
 static ProvState_E se_provState;
 ProvState_E ge_Prov_GetState(void) { return se_provState; }
 
+/* Host authentication: the host link is the trusted host unless a test says
+   otherwise; a host bond (the address) can be listed among the bonds */
+static bool sb_hostTrusted;
+static bool sb_hostBondIsOther;
+bool gb_HostAuth_IsTrustedConn(const struct bt_conn *stpt_conn)
+{
+   return sb_hostTrusted && (stpt_conn == &sst_host);
+}
+bool gb_HostAuth_IsHostAddr(const bt_addr_le_t *stpt_addr)
+{
+   return sb_hostBondIsOther && (bt_addr_le_cmp(stpt_addr, &sst_addrOther) == 0);
+}
+
 static int si_ledInitRet;
 static uint32_t su32_ledSets;
 static uint32_t su32_ledValue;
@@ -712,6 +725,7 @@ void setUp(void)
    su32_destroy = 0U; st_destroyed = 0U;
    st_signRet = PSA_SUCCESS; st_oobVerifyRet = PSA_SUCCESS; su32_sign = 0U; su32_oobVerify = 0U;
    se_provState = ePS_PROVISIONED;
+   sb_hostTrusted = true; sb_hostBondIsOther = false;
    si_ledInitRet = 0; su32_ledSets = 0U; su32_ledValue = 0U;
    su32_notify = 0U; (void)memset(su8ar_notified, 0, sizeof(su8ar_notified));
    su32_refresh = 0U;
@@ -883,6 +897,32 @@ static void test_PeerCannotDriveThisDevice(void)
    sv_ToOobExchange(ePRL_CENTRAL);
    TEST_ASSERT_EQUAL_INT(BT_GATT_ERR(BT_ATT_ERR_WRITE_NOT_PERMITTED),
       gt_Pair_OnControlWrite(&sst_peer, v->u8ar_wire, v->u8_wireLen));
+}
+
+static void test_OnlyTheTrustedHostDrivesThisDevice(void)
+{
+   const char *cpar_names[] = { "start_central", "cancel", "unpair" };
+   uint32_t i;
+
+   // A host link that has not authenticated, and any other link
+   sb_hostTrusted = false;
+   for (i = 0U; i < ARRAY_SIZE(cpar_names); i++)
+   {
+      const PairVector_T *v = CONTROL_VEC(cpar_names[i]);
+
+      TEST_ASSERT_EQUAL_INT_MESSAGE(BT_GATT_ERR(BT_ATT_ERR_AUTHORIZATION),
+         gt_Pair_OnControlWrite(&sst_host, v->u8ar_wire, v->u8_wireLen), cpar_names[i]);
+      TEST_ASSERT_EQUAL_INT_MESSAGE(BT_GATT_ERR(BT_ATT_ERR_AUTHORIZATION),
+         gt_Pair_OnControlWrite(&sst_other, v->u8ar_wire, v->u8_wireLen), cpar_names[i]);
+   }
+   sv_RunPair();
+   TEST_ASSERT_EQUAL_UINT8_MESSAGE(ePST_IDLE, su8_State(), "nothing was queued");
+   TEST_ASSERT_EQUAL_UINT32(0U, su32_scanStart);
+
+   // Trusted: the same START runs
+   sb_hostTrusted = true;
+   TEST_ASSERT_EQUAL_INT(0, gt_Pair_OnControlWrite(&sst_host, CONTROL_VEC("start_central")->u8ar_wire,
+      CONTROL_VEC("start_central")->u8_wireLen));
 }
 
 static void test_FullQueueIsReported(void)
@@ -1783,6 +1823,41 @@ static void test_BtReadyRestoresTheRecordedBond(void)
    TEST_ASSERT_NOT_NULL(gcpt_SimLogFind("no record: not reconnected"));
 }
 
+static void test_HostBondIsNoPeer(void)
+{
+   // Without a record the first bond would be the peer; the host's is skipped
+   sv_ResetModule();
+   sb_hasBond = true;
+   sb_otherBondFirst = true;
+   sb_hostBondIsOther = true;
+   gv_Pair_OnBtReady();
+   sv_RunPair();
+   TEST_ASSERT_EQUAL_UINT8(ePST_PAIRED, su8_State());
+   TEST_ASSERT_EQUAL_HEX8_ARRAY_MESSAGE(&sst_addrB, &su8ar_statusNow[12], 7U, "the peer, not the host");
+
+   // The host's bond alone makes no peer
+   sv_ResetModule();
+   sb_hasBond = true;
+   sb_otherBondFirst = true;
+   sb_hostBondIsOther = true;
+   sst_addrB = sst_addrOther;
+   gv_Pair_OnBtReady();
+   sv_RunPair();
+   TEST_ASSERT_EQUAL_UINT8(ePST_IDLE, su8_State());
+}
+
+static void test_BondedPeerAddressForDirectedAdvertising(void)
+{
+   bt_addr_le_t st_addr;
+
+   TEST_ASSERT_FALSE(gb_Pair_GetBondedPeer(&st_addr));
+   TEST_ASSERT_FALSE(gb_Pair_GetBondedPeer(NULL));
+   sv_RestoreBond(ePRL_PERIPHERAL);
+   TEST_ASSERT_TRUE(gb_Pair_AwaitsBondedPeer());
+   TEST_ASSERT_TRUE(gb_Pair_GetBondedPeer(&st_addr));
+   TEST_ASSERT_EQUAL_HEX8_ARRAY(&sst_addrB, &st_addr, 7U);
+}
+
 static void test_StaleRecordIsDeleted(void)
 {
    // A record without its bond
@@ -2123,6 +2198,7 @@ int main(void)
    RUN_TEST(test_MalformedControlIsRefused);
    RUN_TEST(test_StartDuringARunIsRefused);
    RUN_TEST(test_PeerCannotDriveThisDevice);
+   RUN_TEST(test_OnlyTheTrustedHostDrivesThisDevice);
    RUN_TEST(test_FullQueueIsReported);
    RUN_TEST(test_StartAsPeripheralAdvertisesToThePeer);
    RUN_TEST(test_StartAsCentralScansAndConnects);
@@ -2159,6 +2235,8 @@ int main(void)
    RUN_TEST(test_SettingsHandlerChecksTheRecord);
    RUN_TEST(test_BtReadyRestoresTheRecordedBond);
    RUN_TEST(test_StaleRecordIsDeleted);
+   RUN_TEST(test_HostBondIsNoPeer);
+   RUN_TEST(test_BondedPeerAddressForDirectedAdvertising);
    RUN_TEST(test_CentralReconnectsAndBlinks);
    RUN_TEST(test_PeripheralAwaitsItsCentralAndBlinks);
    RUN_TEST(test_BondedLinkMustReachLevel4);
