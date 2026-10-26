@@ -28,7 +28,7 @@ UUIDs are `B1C1xxxx` followed by the project base `-16A1-4812-AF35-F3F29A92F6CA`
 | STATUS CCCD | `0x2902` | — | Read, Write | Write `01 00` to get notifications |
 | SECURED | `B1C10003-…` | Write | Write, **LE Secure Connections encryption** | `01`, written by the central over the paired peer link (§5 step 9) |
 
-**Advertising.** A provisioned device advertises the Pairing service UUID: flags, plus the incomplete list of 128-bit UUIDs. The device name is in the scan response. A device that is not provisioned advertises the SETU service instead ([../HexUpload/PROTOCOL.md §1](../HexUpload/PROTOCOL.md#1-discovery)). Both services are always in the GATT table.
+**Advertising.** A provisioned device advertises the Pairing service UUID: flags, plus the incomplete list of 128-bit UUIDs, plus its state as manufacturer data ([../HostAuth/PROTOCOL.md §1](../HostAuth/PROTOCOL.md#1-roles-and-links)). The device name is in the scan response. A device that is not provisioned advertises the SETU service instead ([../HexUpload/PROTOCOL.md §1](../HexUpload/PROTOCOL.md#1-discovery)). Both services are always in the GATT table.
 
 **Addresses.** An address is 7 bytes on the wire: `[u8 type][6 B address, least significant byte first]`, the layout of Zephyr's `bt_addr_le_t`. `type` is `0` public or `1` random. An nRF54L15 uses a random static address, so `C4:5E:2A:11:9F:03` (random) is `01 03 9f 11 2a 5e c4`. STATUS gives each device's own address, so the host never has to guess the type.
 

@@ -23,7 +23,17 @@ The PC then pairs with **LE Secure Connections passkey entry**, using that passk
 - When a host that is not trusted disconnects (a failed attempt: Windows drops the link when pairing fails), the window reopens for the time it had left, so the host can reconnect and try again. It never extends the window: once its time has run out, it stays closed.
 - LED1 (`DK_LED2`) blinks while the window is open, and is lit while the trusted host is connected.
 
-While the window is open, the device advertises connectable and undirected. The data is as before: the Pairing service UUID once provisioned, the SETU UUID before ([../Pairing/PROTOCOL.md §2](../Pairing/PROTOCOL.md#2-gatt-the-pairing-service)).
+While the window is open, the device advertises connectable and undirected. The data is the Pairing service UUID once provisioned, the SETU UUID before ([../Pairing/PROTOCOL.md §2](../Pairing/PROTOCOL.md#2-gatt-the-pairing-service)), plus the device's state as manufacturer data (AD type `0xFF`, 4 bytes, 27 of 31 bytes used):
+
+| Byte | Value |
+|---|---|
+| 0–1 | Company ID `0xFFFF`, little-endian (`FF FF`; the Bluetooth SIG's ID for testing and internal use) |
+| 2 | Format `0x01` |
+| 3 | Flags: bit 0 `0x01` PROVISIONED, bit 1 `0x02` HOST_BOND (a host is bonded) |
+
+Examples (`wire.json` `host_auth.advert`): `FF FF 01 00` unprovisioned, `FF FF 01 01` provisioned without a host, `FF FF 01 03` provisioned with a bonded host. The data is set each time advertising starts, and advertising restarts when the host bond goes (Button 3 held, a wipe, a stale record at boot).
+
+**What a host does with it.** A host that holds pairing keys for a device advertising without HOST_BOND knows those keys are stale (§5): it removes them before connecting. A device that advertises HOST_BOND may be bonded with this host, so its keys stay. Without this data (older firmware), the host cannot tell.
 
 Outside the window, a device does not advertise for hosts. The one exception is a bonded pair peripheral whose central is away: it advertises **directed** to that central only.
 
@@ -175,6 +185,11 @@ If the PC has lost its keys, the encryption fails and the link stays HOST_BONDED
 | A new host's pairing | Not reachable while another host is bonded (HELLO refused HOST_BONDED) |
 | Provisioning wipe (DEPROVISION from the trusted host, or Button 0 held 5 s) | Every bond deleted, and the record; the host link stays, untrusted. The device is unprovisioned now: only provisioning is reachable |
 | Boot on an unprovisioned device, or a record whose bond is gone | Record deleted |
+
+**The PC's keys outlive the device's.** When the device forgets the host (Button 3 held, a wipe, DEPROVISION, a chip erase), the PC keeps its keys for the device's address, which does not change (it comes from the chip). Windows then encrypts every new link with them, the device has none, and Windows drops the link at once (the device logs `Host connected`, then `Disconnected (reason 0x13)`, over and over); nothing reaches the device. So the host removes them:
+- **Before connecting**, when the device advertises no HOST_BOND (§1). The GUI's Device page and `setu_client.py` (a device found by `--name`) do it without asking.
+- **After its own DEPROVISION**, once the link has ended: not at once, since Windows would drop the link, and the device's window may have closed long ago. The GUI's Provisioning page and `setu_client.py deprovision` / `provision --negative` do it.
+- **By hand**, for older firmware: the GUI's Device page asks when a link drops this way, and More → *Forget pairing on this PC* removes them for the selected device; or Windows Settings → Bluetooth & devices → remove the `ProjectHanuman` entry.
 
 The device's bond with its pairing peer is separate (`pair/peer`, [../Pairing/PROTOCOL.md §4.1](../Pairing/PROTOCOL.md)); forgetting the host leaves it alone, and the peer's bond restore at boot skips the host's bond.
 

@@ -361,14 +361,54 @@ class SETUClient:
 
 
 async def find_device(address, name):
+    """The device to connect to: the address as given, or the first one
+    advertising the name. A device found by name whose advert says it has no
+    host bond gets this PC's stale keys for it removed first (Windows would
+    encrypt with them and drop the link)."""
     from bleak import BleakScanner
     if address:
         return address
     print(f"scanning for '{name}' ...")
-    dev = await BleakScanner.find_device_by_name(name, timeout=10.0)
+    seen = {}
+
+    def match(dev, adv):
+        if (adv.local_name or dev.name) == name:
+            seen["adv"] = adv
+            return True
+        return False
+    dev = await BleakScanner.find_device_by_filter(match, timeout=10.0)
     if dev is None:
         sys.exit(f"device '{name}' not found")
+    await forget_stale_keys(dev.address, seen["adv"].manufacturer_data)
     return dev
+
+
+async def forget_stale_keys(address, manufacturer_data):
+    """Remove this PC's keys for a device that advertises no host bond
+    (blehost.protocols.host_auth.forget_stale_keys). Quiet off Windows."""
+    from blehost.core import winrt_pairing
+    from blehost.protocols.host_auth import forget_stale_keys as forget
+
+    try:
+        result = await forget(address, manufacturer_data, winrt_pairing.is_paired_address,
+                              winrt_pairing.unpair_address)
+    except winrt_pairing.PairingUnavailable:
+        return
+    if result is not None:
+        print(f"{address} has no host bond: this PC's old keys for it removed ({result})")
+
+
+async def forget_pc_keys(address):
+    """After a DEPROVISION (every bond on the device deleted), once the link is
+    closed: remove this PC's keys for the device. Quiet off Windows."""
+    from blehost.core import winrt_pairing
+
+    try:
+        result = await winrt_pairing.unpair_address(address)
+    except winrt_pairing.PairingUnavailable:
+        return
+    if result != "not_paired":
+        print(f"this PC's keys for {address} removed ({result}): the device no longer has its own")
 
 
 class BleakPairLink:
@@ -507,6 +547,9 @@ async def provision(args):
                     out = await session.provision(ca, args.validity)
             except (ProvisioningError, ValueError) as e:
                 sys.exit(f"provisioning failed: {e}")
+        # --negative wiped it first (DEPROVISION): it no longer has its bond with this PC
+        if session.wiped:
+            await forget_pc_keys(client.address)
     finally:
         await pc.stop()
     print(f"provisioned: serial {out.serial_hex}, {out.device_cert.subject.rfc4514_string()}")
@@ -533,6 +576,8 @@ async def deprovision(args):
             st = await session.get_status()
         except ProvisioningError as e:
             sys.exit(f"deprovisioning failed: {e}")
+    # The device deleted its bond with this PC; the link is closed now
+    await forget_pc_keys(client.address)
     print(f"deprovisioned: device {st.state_name}, new CSR {st.csr_len} B, "
           f"key SHA-256 {st.pubkey_sha256.hex()[:16]}...")
 

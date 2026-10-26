@@ -10,7 +10,7 @@ The server does not program its own flash. It buffers each segment in RAM and lo
 |---|---|
 | Device name (scan response) | `ProjectHanuman` (`CONFIG_BT_DEVICE_NAME`) |
 | Advertised service (adv data, 128-bit list) | `B1C00000-16A1-4812-AF35-F3F29A92F6CA` until the device is provisioned; then the Pairing service `B1C10000-…` ([../Pairing/PROTOCOL.md §2](../Pairing/PROTOCOL.md#2-gatt-the-pairing-service)). The SETU service is in the GATT table either way |
-| Advertising | Only while the host window is open: a press of DK Button 3 opens it for 2 minutes ([../HostAuth/PROTOCOL.md §1](../HostAuth/PROTOCOL.md#1-roles-and-links)) |
+| Advertising | Only while the host window is open: a press of DK Button 3 opens it for 2 minutes ([../HostAuth/PROTOCOL.md §1](../HostAuth/PROTOCOL.md#1-roles-and-links)). It also carries the device's state as manufacturer data (`FF FF 01 <flags>`: provisioned, host bonded; same section) |
 | Connections | One host at a time (a second is refused); while pairing, a peer device on a second link |
 | Security | A provisioned device serves only its **trusted host**, a bonded, level-4 link made by host authentication ([../HostAuth/PROTOCOL.md](../HostAuth/PROTOCOL.md)). Hex upload is refused on any other link (§3, the gate). An unprovisioned device accepts provisioning only |
 

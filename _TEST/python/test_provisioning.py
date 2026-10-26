@@ -246,7 +246,10 @@ def test_deprovision_then_reprovision_with_another_ca(tmp_path, device_csr):
     async def go():
         async with FakeDevice(device_csr) as dev:
             first = await dev.session().provision(ca1)
-            await dev.session().deprovision()
+            s = dev.session()
+            assert not s.wiped
+            await s.deprovision()
+            assert s.wiped, "the device deleted its bonds: the caller drops the PC's keys"
             st = await dev.session().get_status()
             second = await dev.session().provision(ca2)
             return dev, first, st, second
@@ -265,6 +268,17 @@ def test_deprovision_refused(device_csr):
     with pytest.raises(prov.ProvisioningError, match="DEPROVISION: BAD_STATE") as e:
         run(go())
     assert e.value.status == 0x01
+
+
+def test_refused_deprovision_wipes_nothing(device_csr):
+    async def go():
+        async with FakeDevice(device_csr) as dev:
+            dev.force_result[prov.DEPROVISION] = 0x01
+            s = dev.session()
+            with pytest.raises(prov.ProvisioningError):
+                await s.deprovision()
+            return s.wiped
+    assert run(go()) is False
 
 
 # ---- provision --negative (setu_client.provision_with_rejections) ------------

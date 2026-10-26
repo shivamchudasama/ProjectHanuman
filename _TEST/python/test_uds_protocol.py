@@ -281,12 +281,14 @@ def udscli(monkeypatch, udsdev):
             for rt, rp in udsdev.handle(data[1], data[2:]):
                 self.cb(None, bytearray(setu_client.frame(rt, rp)))
 
-    async def find(name, timeout=10.0):
-        return "AA:BB"
+    async def find(match, timeout=10.0):
+        dev = types.SimpleNamespace(address="AA:BB", name="dev")
+        adv = types.SimpleNamespace(local_name="dev", manufacturer_data={})
+        return dev if match(dev, adv) else None
 
     mod = types.ModuleType("bleak")
     mod.BleakClient = Client
-    mod.BleakScanner = types.SimpleNamespace(find_device_by_name=find)
+    mod.BleakScanner = types.SimpleNamespace(find_device_by_filter=find)
     monkeypatch.setitem(sys.modules, "bleak", mod)
     return udsdev
 

@@ -1168,7 +1168,10 @@ static void test_HoldWithoutHost(void)
 
 static void test_WipeForgetsTheRecord(void)
 {
+   uint32_t u32_refreshes;
+
    sv_ToTrusted();
+   u32_refreshes = su32_refresh;
    gv_HostAuth_Forget();
    sv_Run();
    TEST_ASSERT_EQUAL_UINT32(1U, su32_settingsDelete);
@@ -1176,10 +1179,55 @@ static void test_WipeForgetsTheRecord(void)
    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0U, su32_disconnect, "the host link stays");
    TEST_ASSERT_FALSE(gb_HostAuth_IsTrustedConn(&sst_host));
    TEST_ASSERT_FALSE(gb_HostAuth_IsHostAddr(&sst_addrHost));
+   TEST_ASSERT_EQUAL_UINT32_MESSAGE(u32_refreshes + 1U, su32_refresh, "advertising shows no host bond at once");
    // Unprovisioned now: the host reaches provisioning only
    se_provState = ePS_KEY_READY;
    TEST_ASSERT_TRUE(gb_HostAuth_Admits(0x22U));
    TEST_ASSERT_FALSE(gb_HostAuth_Admits(0x40U));
+}
+
+/******************************************************************************/
+/*  Advertised state                                                          */
+/******************************************************************************/
+static void sv_AssertAdv(const uint8_t *u8pt_expected, uint32_t u32_len)
+{
+   uint8_t u8ar_adv[HOST_AUTH_ADV_LEN];
+
+   TEST_ASSERT_EQUAL_UINT32(HOST_AUTH_ADV_LEN, u32_len);
+   gv_HostAuth_GetAdvData(u8ar_adv);
+   TEST_ASSERT_EQUAL_HEX8_ARRAY(u8pt_expected, u8ar_adv, HOST_AUTH_ADV_LEN);
+}
+
+static void test_AdvConstantsMatchTheVectors(void)
+{
+   TEST_ASSERT_EQUAL_HEX16(VEC_HAUTH_ADV_COMPANY_ID, HOST_AUTH_ADV_COMPANY_ID);
+   TEST_ASSERT_EQUAL_UINT8(VEC_HAUTH_ADV_FORMAT, HOST_AUTH_ADV_FORMAT);
+   TEST_ASSERT_EQUAL_HEX8(VEC_HAUTH_ADV_FLAG_PROVISIONED, HOST_AUTH_ADV_FLAG_PROVISIONED);
+   TEST_ASSERT_EQUAL_HEX8(VEC_HAUTH_ADV_FLAG_HOST_BOND, HOST_AUTH_ADV_FLAG_HOST_BOND);
+}
+
+static void test_AdvFollowsProvisioningAndTheHostBond(void)
+{
+   se_provState = ePS_KEY_READY;
+   sv_AssertAdv(gu8ar_vecHauthAdvUnprovisioned, VEC_HAUTH_ADV_UNPROVISIONED_LEN);
+   se_provState = ePS_PROVISIONED;
+   sv_AssertAdv(gu8ar_vecHauthAdvProvisioned, VEC_HAUTH_ADV_PROVISIONED_LEN);
+   // The host bonds
+   sv_ToTrusted();
+   sv_AssertAdv(gu8ar_vecHauthAdvProvisionedHost, VEC_HAUTH_ADV_PROVISIONED_HOST_LEN);
+   // Button 3 held: the bond is gone, and the advert says so
+   gv_HostAuth_ForgetHostAndOpen();
+   sv_Run();
+   sv_AssertAdv(gu8ar_vecHauthAdvProvisioned, VEC_HAUTH_ADV_PROVISIONED_LEN);
+}
+
+static void test_AdvAfterAWipe(void)
+{
+   sv_ToTrusted();
+   gv_HostAuth_Forget();
+   sv_Run();
+   se_provState = ePS_KEY_READY;
+   sv_AssertAdv(gu8ar_vecHauthAdvUnprovisioned, VEC_HAUTH_ADV_UNPROVISIONED_LEN);
 }
 
 /******************************************************************************/
@@ -1204,6 +1252,7 @@ static void test_BtReadyDropsAStaleRecord(void)
    sv_Run();
    TEST_ASSERT_FALSE(gb_HostAuth_IsHostAddr(&sst_addrHost));
    TEST_ASSERT_EQUAL_UINT32(1U, su32_settingsDelete);
+   TEST_ASSERT_EQUAL_UINT32(1U, su32_refresh);
 
    // An unprovisioned device keeps none
    TEST_ASSERT_EQUAL_INT(0, si_LoadRecord(&sst_addrHost));
@@ -1279,6 +1328,9 @@ int main(void)
    RUN_TEST(test_HoldForgetsTheHostAndOpensTheWindow);
    RUN_TEST(test_HoldWithoutHost);
    RUN_TEST(test_WipeForgetsTheRecord);
+   RUN_TEST(test_AdvConstantsMatchTheVectors);
+   RUN_TEST(test_AdvFollowsProvisioningAndTheHostBond);
+   RUN_TEST(test_AdvAfterAWipe);
    RUN_TEST(test_BtReadyKeepsTheRecordWithItsBond);
    RUN_TEST(test_BtReadyDropsAStaleRecord);
    RUN_TEST(test_RecordLoadErrors);

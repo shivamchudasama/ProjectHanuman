@@ -308,6 +308,8 @@ class ProvisioningFeature(Feature):
             self._show_status(st)
             self._log(f"provisioning removed: device {st.state_name}, new key "
                       f"{st.pubkey_sha256.hex()[:16]}…")
+            # The device deleted its bond with this PC: this PC's keys go when the link ends
+            self.ctx.link.forget_keys_after_disconnect()
         self._log("removing the device's provisioning")
         self._run(go(), done)
 

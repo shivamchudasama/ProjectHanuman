@@ -76,7 +76,7 @@ This closes audit finding F1, the unauthenticated host link ([../Audit/FINDINGS.
   2. Press the device's Button 3 and connect (Device page).
   3. Click "Authenticate & pair". Windows pairs without a prompt.
 
-  After that, every page works on that device.
+  After that, every page works on that device. A device that has forgotten this PC (chip erase, wipe, Button 3 held) advertises that it has no host bond, and the Device page removes Windows' old keys for it before connecting, so it is set up like a new device.
 - **CLI.**
   ```
   python setu_client.py hostcert "Service laptop" --ca <CA folder>
@@ -93,7 +93,7 @@ About 7.9 KB of flash and 9.5 KB of RAM: a 6 KiB stack, the 1170-byte HELLO/CHAL
 
 | Test | What |
 |---|---|
-| `_TEST/unit/HostAuth/test_host_auth.c` (`host_auth`) | HostAuth.c with the BT stack, router, SETU, verification and crypto stubbed: the gate in every state, every RESULT, the SMP callbacks, trust (bond + level 4), the record, one host, reconnection, the window, the grace window, forgetting, the wipe, the timeout, the shared buffer |
+| `_TEST/unit/HostAuth/test_host_auth.c` (`host_auth`) | HostAuth.c with the BT stack, router, SETU, verification and crypto stubbed: the gate in every state, every RESULT, the SMP callbacks, trust (bond + level 4), the record, one host, reconnection, the window, the grace window, forgetting, the wipe, the timeout, the shared buffer, the advertised state (against `wire.json` `host_auth.advert`) |
 | `test_host_auth_crypto.c` (`host_auth_crypto`) | HostAuthCrypto.c on the real TF-PSA-Crypto against the Python-made handshake in `wire.json`: T, Z, the passkey, both signatures; altered bytes and swapped roles rejected |
 | `test_host_auth_button.c` (`host_auth_button`) | Short press, hold, each press timed on its own, other buttons |
 | `_TEST/unit/DeviceCert/test_devicecert_verify.c` | `ge_VerifyHostCertificate()` on the real Mbed TLS with certificates from the PC's CA: roles never mix |
@@ -110,4 +110,5 @@ About 7.9 KB of flash and 9.5 KB of RAM: a 6 KiB stack, the 1170-byte HELLO/CHAL
 - **No revocation, no expiry.** The device has no wall clock and no revocation list ([../Audit/FINDINGS.md](../Audit/FINDINGS.md) F11). A stolen host credential is good for any device without a bonded host until the CA is replaced.
 - **Unprovisioned devices are open** to provisioning while the window is open.
 - **One host at a time.** A second PC needs the button (the first loses access).
+- **Stale keys on the PC.** A device that forgot the host (button, wipe, chip erase) cannot be reached while the PC keeps its own keys for it: Windows encrypts with them and drops the link (0x13). The device advertises whether it has a host bond, and the GUI and `setu_client.py` remove such keys before connecting ([PROTOCOL.md §1, §5](PROTOCOL.md#5-forgetting-the-host)). A device with a host bond keeps the PC's keys, even if the bond is another PC's. Anyone in range can see whether a device has a host.
 - **The thread's stack** is not measured yet (see Memory).

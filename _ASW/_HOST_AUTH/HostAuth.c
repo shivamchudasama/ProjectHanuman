@@ -1325,6 +1325,7 @@ static void sv_HandleBtReady(void)
          APP_LOG_WRN("host record without bond: forgotten");
          (void)atomic_set(&st_hostBonded, 0);
          (void)settings_delete(HOST_AUTH_SETTINGS_SUBTREE "/" HOST_AUTH_SETTINGS_KEY);
+         gv_BLE_RefreshAdv();
       }
       else
       {
@@ -1522,6 +1523,8 @@ static void sv_HandleEvent(const HostAuthEvent_T *stpt_event)
          // The wipe deleted every bond; the host link stays, untrusted
          (void)atomic_set(&st_hostBonded, 0);
          (void)settings_delete(HOST_AUTH_SETTINGS_SUBTREE "/" HOST_AUTH_SETTINGS_KEY);
+         // The wipe's own refresh may have run before this: advertise no host bond
+         gv_BLE_RefreshAdv();
          sv_EndSession();
 
          // Check if the host link is up: it is a plain link now
@@ -1951,6 +1954,39 @@ HostAuthState_E ge_HostAuth_GetState(void)
       default:
          return (atomic_get(&st_hostBonded) != 0) ? eHAS_HOST_BONDED : eHAS_OPEN;
    }
+}
+
+/**
+ * @public        gv_HostAuth_GetAdvData
+ * @brief         The manufacturer data ConnectionHandling.c advertises:
+ *                [company ID u16 LE][format][flags], flags telling whether the
+ *                device is provisioned and has a host bond. A PC that holds keys
+ *                for a device without a host bond removes them before it
+ *                connects (they are stale: the device was wiped or erased, or
+ *                forgot its host). Any thread.
+ * @param[out]    u8ar_out HOST_AUTH_ADV_LEN bytes.
+ * @return        None.
+ */
+void gv_HostAuth_GetAdvData(uint8_t u8ar_out[HOST_AUTH_ADV_LEN])
+{
+   uint8_t u8_flags = 0U;
+
+   // Check if the device is provisioned
+   if (sb_IsProvisioned())
+   {
+      u8_flags |= HOST_AUTH_ADV_FLAG_PROVISIONED;
+   }
+
+   // Check if a host is bonded
+   if (atomic_get(&st_hostBonded) != 0)
+   {
+      u8_flags |= HOST_AUTH_ADV_FLAG_HOST_BOND;
+   }
+
+   u8ar_out[0] = (uint8_t)(HOST_AUTH_ADV_COMPANY_ID & 0xFFU);
+   u8ar_out[1] = (uint8_t)(HOST_AUTH_ADV_COMPANY_ID >> 8);
+   u8ar_out[2] = HOST_AUTH_ADV_FORMAT;
+   u8ar_out[3] = u8_flags;
 }
 
 /**

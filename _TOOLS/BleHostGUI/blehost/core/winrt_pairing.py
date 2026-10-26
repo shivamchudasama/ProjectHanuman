@@ -48,6 +48,40 @@ async def _pairing(client):
     return en, info.pairing
 
 
+async def _pairing_at(address: str):
+    """The DevicePairing of a BLE address, without a link (the link may be the
+    thing that fails: a board that lost its keys while Windows kept its own)."""
+    en = _enumeration()
+    try:
+        from winrt.windows.devices.bluetooth import BluetoothLEDevice
+    except ImportError as e:
+        raise PairingUnavailable(f"WinRT Bluetooth API not available ({e})") from None
+    try:
+        raw = int(address.replace(":", "").replace("-", ""), 16)
+    except ValueError:
+        raise ValueError(f"not a Bluetooth address: {address!r}") from None
+    device = await BluetoothLEDevice.from_bluetooth_address_async(raw)
+    if device is None:
+        return en, None
+    return en, device.device_information.pairing
+
+
+async def is_paired_address(address: str) -> bool:
+    """Whether Windows holds pairing keys for this address."""
+    _en, pairing = await _pairing_at(address)
+    return bool(pairing is not None and pairing.is_paired)
+
+
+async def unpair_address(address: str) -> str:
+    """Forget this address's keys on this PC, without a link. Returns
+    Windows' result name."""
+    _en, pairing = await _pairing_at(address)
+    if pairing is None or not pairing.is_paired:
+        return "not_paired"
+    result = await pairing.unpair_async()
+    return result.status.name.lower()
+
+
 async def is_paired(client) -> bool:
     _en, pairing = await _pairing(client)
     return bool(pairing.is_paired)
