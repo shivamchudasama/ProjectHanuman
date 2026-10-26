@@ -3,16 +3,41 @@
 On the left the connection card (link state, device, Connect / Disconnect /
 Read Caps) with the link's details (ATT MTU and CAPS) in a section that
 opens after Read Caps, and the base UUID in a collapsible section under it;
-on the right the scan list."""
+on the right the scan list.
 
+Stale keys: when a board forgets this PC (chip erase, wipe, DEPROVISION,
+Button 3 held) Windows keeps its own keys, encrypts every new link with them,
+fails and drops it (the board logs reason 0x13) - the board cannot be reached.
+The board advertises whether it has a host bond: Connect first removes this
+PC's keys for a board that has none (protocols/host_auth.forget_stale_keys),
+silently. For a board that does not advertise it (older firmware), when a link
+dies while connecting or within STALE_KEYS_WINDOW_S of it, the page asks
+Windows whether it holds keys for that address and offers to forget them;
+More -> "Forget pairing on this PC" does it for the selected board."""
+
+import time
 import tkinter as tk
 from tkinter import messagebox, ttk
 
 from ..core.ble_link import LinkState
+from ..core.winrt_pairing import PairingUnavailable
+from ..protocols import host_auth
 from ..protocols import setu
 from ..protocols.setu import setu_client
 from . import theme as th
-from .widgets import Disclosure, Pill, card, set_icon, set_var
+from .widgets import Disclosure, MoreMenu, Pill, card, set_icon, set_var
+
+# A link that dies this soon after connecting may be Windows' stale keys
+STALE_KEYS_WINDOW_S = 10.0
+
+STALE_KEYS_TEXT = (
+    "Windows still holds pairing keys for {name} [{addr}], and the link dropped as soon as "
+    "it was made.\n\nThis happens when the board has forgotten this PC (chip erase, wipe, "
+    "DEPROVISION or Button 3 held): Windows encrypts with its old keys, the board has none, "
+    "and Windows drops the link.\n\nForget the keys on this PC now? Then connect again "
+    "(press the board's Button 3 if LED1 is not blinking) and authenticate on Host access.\n\n"
+    "If the board still trusts this PC, forgetting the keys here makes it refuse this PC "
+    "until its Button 3 is held.")
 
 # Link state -> (pill text, tone)
 STATE_PILL = {
@@ -24,6 +49,11 @@ STATE_PILL = {
 }
 
 
+def unreached(exc) -> bool:
+    """The connect failed before reaching the board (not found, timed out)."""
+    return isinstance(exc, TimeoutError) or type(exc).__name__ == "BleakDeviceNotFoundError"
+
+
 class ConnectionPanel(ttk.Frame):
     def __init__(self, parent, ctx, is_busy):
         theme = th.of(ctx)
@@ -31,6 +61,8 @@ class ConnectionPanel(ttk.Frame):
         self.ctx = ctx
         self._is_busy = is_busy          # () -> True if a feature has work in progress
         self._results = []
+        self._attempt = None             # (address, name) of the last Connect
+        self._connected_at = None        # time.monotonic() when it came up
         s = ctx.settings
         self.columnconfigure(0, weight=2, uniform="col")
         self.columnconfigure(1, weight=3, uniform="col")
@@ -57,6 +89,9 @@ class ConnectionPanel(ttk.Frame):
         self.disconnect_btn.grid(row=0, column=1, sticky="ew", padx=theme.px(6))
         self.caps_btn = ttk.Button(btns, text="Read Caps", command=self._read_caps)
         self.caps_btn.grid(row=0, column=2, sticky="ew")
+        more = MoreMenu(btns, theme)
+        more.grid(row=0, column=3, sticky="e", padx=(theme.px(6), 0))
+        self.forget_btn = more.add("Forget pairing on this PC…", self._forget_selected)
         set_icon(self.connect_btn, theme, "connect", accent=True)
         set_icon(self.disconnect_btn, theme, "disconnect")
         set_icon(self.caps_btn, theme, "info")
@@ -138,6 +173,7 @@ class ConnectionPanel(ttk.Frame):
         self.connect_btn.state(["!disabled"] if idle and self._selected() else ["disabled"])
         self.disconnect_btn.state(["!disabled"] if con or st == LinkState.CONNECTING else ["disabled"])
         self.caps_btn.state(["!disabled"] if con else ["disabled"])
+        self.forget_btn.state(["!disabled"] if idle and self._selected() else ["disabled"])
         self.base_entry.state(["!disabled"] if idle else ["disabled"])
         self.state_pill.set(*STATE_PILL.get(st, (st.value, "idle")))
         if not con:
@@ -149,6 +185,7 @@ class ConnectionPanel(ttk.Frame):
         """The link changed (MainWindow, Tk thread): the card's device lines."""
         self.update_state()
         if state == LinkState.CONNECTED:
+            self._connected_at = time.monotonic()
             self.name_var.set(info.get("name") or "(no name)")
             self.addr_var.set(info.get("address") or "")
             self._facts["ATT MTU"].set(str(info.get("mtu") or "–"))
@@ -158,6 +195,16 @@ class ConnectionPanel(ttk.Frame):
         elif state == LinkState.IDLE:
             self.name_var.set("Not connected")
             self.addr_var.set(info.get("reason") or "Select a device, then Connect.")
+            if info.get("reason") == "link lost" and self._dropped_early():
+                self._check_stale_keys()
+            self._attempt = self._connected_at = None
+
+    def _dropped_early(self) -> bool:
+        """The last Connect's link died while connecting or soon after."""
+        if self._attempt is None:
+            return False
+        return (self._connected_at is None
+                or time.monotonic() - self._connected_at < STALE_KEYS_WINDOW_S)
 
     # ---- scan --------------------------------------------------------------
     def _scan(self):
@@ -202,7 +249,72 @@ class ConnectionPanel(ttk.Frame):
             return
         self.ctx.settings.base_uuid = base
         name = self.tree.set(addr, "name")
-        self.ctx.run(self.ctx.link.connect(addr, name), on_error=self._error("Connect"))
+        self._attempt, self._connected_at = (addr, name), None
+        found = next((r for r in self._results if r.address == addr), None)
+        mdata = found.manufacturer_data if found else {}
+        link, log = self.ctx.link, self.ctx.log         # ctx.log: any thread
+
+        async def go():
+            try:
+                result = await host_auth.forget_stale_keys(addr, mdata, link.is_paired_address,
+                                                           link.unpair_address)
+            except PairingUnavailable:
+                result = None                            # not Windows: nothing to clean
+            except Exception as e:                       # noqa: BLE001 - connect anyway
+                log(f"{name or addr}: could not check this PC's keys for it ({e})", "warn")
+                result = None
+            if result is not None:
+                log(f"{name or addr} has no host bond: this PC's old keys for it removed ({result})")
+            await link.connect(addr, name)
+
+        def failed(exc):                     # the link is IDLE again by now
+            self._error("Connect")(exc)
+            # A board that was not reached says nothing about keys (it may be a
+            # trusted one out of range); one that was reached and dropped may
+            if not unreached(exc):
+                self._check_stale_keys((addr, name))
+        self.ctx.run(go(), on_error=failed)
+
+    # ---- stale keys ----------------------------------------------------------
+    def _check_stale_keys(self, attempt=None):
+        """Ask Windows whether it holds keys for the attempt's address (the
+        last Connect's by default); if so, offer to forget them. Quiet where
+        Windows cannot tell."""
+        attempt = attempt or self._attempt
+        if attempt is None:
+            return
+        addr, name = attempt
+
+        def done(paired):
+            if paired:
+                self.ctx.log(f"{name or addr}: Windows holds pairing keys the board may have lost", "warn")
+                if messagebox.askyesno("Stale pairing keys",
+                                       STALE_KEYS_TEXT.format(name=name or "this board", addr=addr)):
+                    self._forget(addr, name)
+
+        def unknown(exc):
+            self.ctx.log(f"pairing state of {addr} unknown: {exc}", "warn")
+        self.ctx.run(self.ctx.link.is_paired_address(addr), on_done=done, on_error=unknown)
+
+    def _forget_selected(self):
+        addr = self._selected()
+        if not addr or self.ctx.link.state != LinkState.IDLE:
+            return
+        name = self.tree.set(addr, "name")
+        if messagebox.askyesno(
+                "Forget pairing",
+                f"Remove this PC's pairing keys for {name or 'this board'} [{addr}]?\n\n"
+                "Use it when the board has forgotten this PC (chip erase, wipe, DEPROVISION or "
+                "Button 3 held). If the board still trusts this PC, it will refuse this PC "
+                "until its Button 3 is held."):
+            self._forget(addr, name)
+
+    def _forget(self, addr, name):
+        def done(result):
+            self.ctx.log(f"{name or addr}: pairing keys forgotten on this PC ({result}); connect "
+                         "again, then authenticate on Host access")
+        self.ctx.run(self.ctx.link.unpair_address(addr), on_done=done,
+                     on_error=self._error("Forget pairing"))
 
     def _disconnect(self):
         if self._is_busy() and not messagebox.askyesno(

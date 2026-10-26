@@ -318,6 +318,14 @@ static bt_addr_le_t sst_hostAddr;
 static atomic_t st_window = ATOMIC_INIT(0);
 
 /**
+ * @var           si64_windowEndMs
+ * @brief         Uptime at which the last opened window ends; kept when a host
+ *                connection closes the window early, so an untrusted host's
+ *                loss gives back the rest of it (0: none). Thread only.
+ */
+static int64_t si64_windowEndMs;
+
+/**
  * @var           st_bufBusy
  * @brief         1 from an accepted HELLO START until su8ar_buf is free again:
  *                HELLO refused or failed, or the CHALLENGE transfer ended (or
@@ -1268,6 +1276,7 @@ static void sv_SetWindow(bool b_open, int32_t i32_ms)
    // Check if it opens: it closes again after i32_ms
    if (b_open)
    {
+      si64_windowEndMs = k_uptime_get() + i32_ms;
       (void)k_work_reschedule(&sst_windowWork, K_MSEC(i32_ms));
       APP_LOG_INF("host window open for %d ms", (int)i32_ms);
    }
@@ -1316,6 +1325,7 @@ static void sv_HandleBtReady(void)
          APP_LOG_WRN("host record without bond: forgotten");
          (void)atomic_set(&st_hostBonded, 0);
          (void)settings_delete(HOST_AUTH_SETTINGS_SUBTREE "/" HOST_AUTH_SETTINGS_KEY);
+         gv_BLE_RefreshAdv();
       }
       else
       {
@@ -1441,6 +1451,16 @@ static void sv_HandleEvent(const HostAuthEvent_T *stpt_event)
          {
             sv_SetWindow(true, CONFIG_HOST_AUTH_GRACE_MS);
          }
+         // Check if an untrusted host left (a failed attempt, Windows drops the
+         // link): the window it closed reopens for the time it had left
+         else if (si64_windowEndMs > k_uptime_get())
+         {
+            sv_SetWindow(true, (int32_t)(si64_windowEndMs - k_uptime_get()));
+         }
+         else
+         {
+            // No window left to give back
+         }
          sv_UpdateLed();
          break;
 
@@ -1494,6 +1514,7 @@ static void sv_HandleEvent(const HostAuthEvent_T *stpt_event)
          break;
 
       case eHAE_WINDOW_CLOSED:
+         si64_windowEndMs = 0;
          sv_SetWindow(false, 0);
          APP_LOG_INF("host window closed");
          break;
@@ -1502,6 +1523,8 @@ static void sv_HandleEvent(const HostAuthEvent_T *stpt_event)
          // The wipe deleted every bond; the host link stays, untrusted
          (void)atomic_set(&st_hostBonded, 0);
          (void)settings_delete(HOST_AUTH_SETTINGS_SUBTREE "/" HOST_AUTH_SETTINGS_KEY);
+         // The wipe's own refresh may have run before this: advertise no host bond
+         gv_BLE_RefreshAdv();
          sv_EndSession();
 
          // Check if the host link is up: it is a plain link now
@@ -1931,6 +1954,39 @@ HostAuthState_E ge_HostAuth_GetState(void)
       default:
          return (atomic_get(&st_hostBonded) != 0) ? eHAS_HOST_BONDED : eHAS_OPEN;
    }
+}
+
+/**
+ * @public        gv_HostAuth_GetAdvData
+ * @brief         The manufacturer data ConnectionHandling.c advertises:
+ *                [company ID u16 LE][format][flags], flags telling whether the
+ *                device is provisioned and has a host bond. A PC that holds keys
+ *                for a device without a host bond removes them before it
+ *                connects (they are stale: the device was wiped or erased, or
+ *                forgot its host). Any thread.
+ * @param[out]    u8ar_out HOST_AUTH_ADV_LEN bytes.
+ * @return        None.
+ */
+void gv_HostAuth_GetAdvData(uint8_t u8ar_out[HOST_AUTH_ADV_LEN])
+{
+   uint8_t u8_flags = 0U;
+
+   // Check if the device is provisioned
+   if (sb_IsProvisioned())
+   {
+      u8_flags |= HOST_AUTH_ADV_FLAG_PROVISIONED;
+   }
+
+   // Check if a host is bonded
+   if (atomic_get(&st_hostBonded) != 0)
+   {
+      u8_flags |= HOST_AUTH_ADV_FLAG_HOST_BOND;
+   }
+
+   u8ar_out[0] = (uint8_t)(HOST_AUTH_ADV_COMPANY_ID & 0xFFU);
+   u8ar_out[1] = (uint8_t)(HOST_AUTH_ADV_COMPANY_ID >> 8);
+   u8ar_out[2] = HOST_AUTH_ADV_FORMAT;
+   u8ar_out[3] = u8_flags;
 }
 
 /**

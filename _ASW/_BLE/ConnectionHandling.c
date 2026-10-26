@@ -220,10 +220,18 @@ static struct k_spinlock sst_hostLock;
 static bool sb_btReady = false;
 
 /**
+ * @var           su8ar_advState
+ * @brief         Manufacturer data of both advertising sets: [company ID]
+ *                [format][flags] from gv_HostAuth_GetAdvData(), filled in
+ *                before each start (provisioned, host bonded).
+ */
+static uint8_t su8ar_advState[HOST_AUTH_ADV_LEN];
+
+/**
  * @var           sstar_advDataProv
- * @brief         Advertising data of a device to provision: flags and the
- *                SETU service, which lets the PC filter its scans. The name
- *                stays in the scan response (both don't fit in 31 B).
+ * @brief         Advertising data of a device to provision: flags, the SETU
+ *                service, which lets the PC filter its scans, and the state
+ *                (27 of 31 B). The name stays in the scan response.
  */
 static struct bt_data sstar_advDataProv[] =
 {
@@ -231,6 +239,8 @@ static struct bt_data sstar_advDataProv[] =
    BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
    // AD Type: Complete list of 128-bit service UUIDs - SETU service
    BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_SETU_SVC_VAL),
+   // AD Type: Manufacturer data - provisioned / host bonded
+   BT_DATA(BT_DATA_MANUFACTURER_DATA, su8ar_advState, sizeof(su8ar_advState)),
 };
 
 /**
@@ -245,6 +255,8 @@ static struct bt_data sstar_advDataPair[] =
    BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
    // AD Type: Incomplete list of 128-bit service UUIDs - Pairing service
    BT_DATA_BYTES(BT_DATA_UUID128_SOME, BT_UUID_PAIR_SVC_VAL),
+   // AD Type: Manufacturer data - provisioned / host bonded
+   BT_DATA(BT_DATA_MANUFACTURER_DATA, su8ar_advState, sizeof(su8ar_advState)),
 };
 
 /**
@@ -699,6 +711,9 @@ static void sv_StartAdvIfAllowed(void)
       return;
    }
 
+   // The state the PC reads before connecting (a host bond, or none)
+   gv_HostAuth_GetAdvData(su8ar_advState);
+
    // Start advertising by setting advertisement data, scan response data,
    // and advertisement parameters.
    i_err = bt_le_adv_start(
@@ -718,7 +733,8 @@ static void sv_StartAdvIfAllowed(void)
       return;
    }
 
-   LOG_INF("Advertising for a host (%s)", b_isProvisioned ? "provisioned" : "unprovisioned");
+   LOG_INF("Advertising for a host (%s, %s)", b_isProvisioned ? "provisioned" : "unprovisioned",
+      ((su8ar_advState[3] & HOST_AUTH_ADV_FLAG_HOST_BOND) != 0U) ? "host bonded" : "no host");
 }
 
 /**
@@ -1025,9 +1041,9 @@ struct bt_conn *gstpt_BLE_GetHostConn(void)
 
 /**
  * @public        gv_BLE_RefreshAdv
- * @brief         Re-evaluate advertising after a provisioning or pairing
- *                change: undirected advertising restarts with data for the new
- *                provisioning state, or stays off (host connected and no
+ * @brief         Re-evaluate advertising after a provisioning, pairing or
+ *                host-bond change: undirected advertising restarts with data
+ *                for the new state, or stays off (host connected and no
  *                bonded central awaited, or _PAIR uses the advertiser). Any
  *                thread.
  * @return        None.

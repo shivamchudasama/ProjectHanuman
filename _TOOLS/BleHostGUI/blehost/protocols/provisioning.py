@@ -142,6 +142,9 @@ class ProvisioningSession:
         self.receiver = receiver
         self.log = log
         self.step = step or (lambda _t: None)
+        # True once DEPROVISION succeeded: the device deleted every bond, so the
+        # PC's keys for it are stale once this link ends (the caller removes them)
+        self.wiped = False
 
     # ---- device replies (short messages on the device's CTRL) -----------------
     async def _wait_short(self, app_type: int, accept, timeout: float, what: str) -> bytes:
@@ -225,6 +228,7 @@ class ProvisioningSession:
         st = await self._wait_result(DEPROVISION, timeout)
         if st != ST_OK:
             raise ProvisioningError(f"device refused DEPROVISION: {status_name(st)}", st)
+        self.wiped = True
 
     async def fetch_and_sign(self, ca, validity_days: int = 365) -> Issued:
         """STATUS, CSR, check it, sign it. Refuses a provisioned device: it keeps

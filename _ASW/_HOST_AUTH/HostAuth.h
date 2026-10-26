@@ -117,6 +117,38 @@
  */
 #define HOST_AUTH_FLAG_HOST_BOND             (0x02U)
 
+/**
+ * @def           HOST_AUTH_ADV_COMPANY_ID
+ * @brief         Company ID of the advertised manufacturer data (Bluetooth SIG:
+ *                0xFFFF is for testing and internal use).
+ */
+#define HOST_AUTH_ADV_COMPANY_ID             (0xFFFFU)
+
+/**
+ * @def           HOST_AUTH_ADV_FORMAT
+ * @brief         Format of the advertised manufacturer data.
+ */
+#define HOST_AUTH_ADV_FORMAT                 (1U)
+
+/**
+ * @def           HOST_AUTH_ADV_LEN
+ * @brief         Manufacturer data length: [company ID u16 LE][format][flags].
+ */
+#define HOST_AUTH_ADV_LEN                    (4U)
+
+/**
+ * @def           HOST_AUTH_ADV_FLAG_PROVISIONED
+ * @brief         Advertised flags bit: the device is provisioned.
+ */
+#define HOST_AUTH_ADV_FLAG_PROVISIONED       (0x01U)
+
+/**
+ * @def           HOST_AUTH_ADV_FLAG_HOST_BOND
+ * @brief         Advertised flags bit: a host is bonded. A PC that holds keys
+ *                for a device advertising without it knows they are stale.
+ */
+#define HOST_AUTH_ADV_FLAG_HOST_BOND         (0x02U)
+
 /******************************************************************************/
 /*                                                                            */
 /*                                   ENUMS                                    */
@@ -197,6 +229,7 @@ extern void gv_HostAuth_OpenWindow(void);
 extern void gv_HostAuth_ForgetHostAndOpen(void);
 extern void gv_HostAuth_Forget(void);
 extern HostAuthState_E ge_HostAuth_GetState(void);
+extern void gv_HostAuth_GetAdvData(uint8_t u8ar_out[HOST_AUTH_ADV_LEN]);
 
 #endif //!_HOST_AUTH_H
 

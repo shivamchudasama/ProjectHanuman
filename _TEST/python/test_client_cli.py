@@ -45,6 +45,10 @@ class FakeBleakClient:
         self.notify_uuid = None
         FakeBleakClient.made.append(self)
 
+    @property
+    def address(self):
+        return getattr(self.target, "address", self.target)
+
     async def __aenter__(self):
         return self
 
@@ -68,20 +72,58 @@ class FakeBleakClient:
             caps_uuid=setu_client.char_uuid(3, setu_client.PROJECT_BASE))
 
 
+class FakeDevice(str):
+    """A BLEDevice that compares equal to its address."""
+
+    @property
+    def address(self):
+        return str(self)
+
+    name = None
+
+
 @pytest.fixture
 def bleak(monkeypatch):
-    """A fake bleak: one device called "dev" at AA:BB."""
-    found = {"dev": "AA:BB"}
+    """A fake bleak: one device called "dev" at AA:BB; mod.adverts[address] is
+    its advert's manufacturer data."""
+    found = {"dev": FakeDevice("AA:BB")}
 
-    async def find_device_by_name(name, timeout=10.0):
-        return found.get(name)
+    async def find_device_by_filter(match, timeout=10.0):
+        for name, dev in found.items():
+            adv = types.SimpleNamespace(local_name=name,
+                                        manufacturer_data=mod.adverts.get(str(dev), {}))
+            if match(dev, adv):
+                return dev
+        return None
 
     mod = types.ModuleType("bleak")
     mod.BleakClient = FakeBleakClient
-    mod.BleakScanner = types.SimpleNamespace(find_device_by_name=find_device_by_name)
+    mod.BleakScanner = types.SimpleNamespace(find_device_by_filter=find_device_by_filter)
+    mod.adverts = {}
     monkeypatch.setitem(sys.modules, "bleak", mod)
     FakeBleakClient.made = []
     return mod
+
+
+@pytest.fixture
+def keys(monkeypatch):
+    """This PC's pairing keys, by address (core/winrt_pairing.py faked)."""
+    from blehost.core import winrt_pairing
+    held = {"AA:BB"}
+    removed = []
+
+    async def is_paired_address(address):
+        return address in held
+
+    async def unpair_address(address):
+        removed.append(address)
+        if address not in held:
+            return "not_paired"
+        held.discard(address)
+        return "unpaired"
+    monkeypatch.setattr(winrt_pairing, "is_paired_address", is_paired_address)
+    monkeypatch.setattr(winrt_pairing, "unpair_address", unpair_address)
+    return removed
 
 
 def cli(monkeypatch, *argv):
@@ -200,6 +242,29 @@ def test_hex_argument_errors(bleak, monkeypatch, argv, match):
     assert FakeBleakClient.made == [], "nothing connects on a bad argument"
 
 
+def test_find_device_removes_stale_keys(bleak, keys, capsys):
+    # The board advertises no host bond, yet this PC holds keys for it: stale
+    bleak.adverts["AA:BB"] = {0xFFFF: bytes([1, 0x01])}
+    assert asyncio.run(setu_client.find_device(None, "dev")) == "AA:BB"
+    assert keys == ["AA:BB"]
+    assert "AA:BB has no host bond: this PC's old keys for it removed (unpaired)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("advert", [{0xFFFF: bytes([1, 0x03])}, {}, {0x0059: bytes([1, 0])}])
+def test_find_device_keeps_keys(bleak, keys, advert):
+    # A host bond, no advert (older firmware) or another company's data: keys stay
+    bleak.adverts["AA:BB"] = advert
+    asyncio.run(setu_client.find_device(None, "dev"))
+    assert keys == []
+
+
+def test_find_device_off_windows(bleak, monkeypatch):
+    from blehost.core import winrt_pairing
+    bleak.adverts["AA:BB"] = {0xFFFF: bytes([1, 0])}
+    monkeypatch.setattr(winrt_pairing.sys, "platform", "linux")
+    assert asyncio.run(setu_client.find_device(None, "dev")) == "AA:BB"
+
+
 # ---- provision / deprovision --------------------------------------------------------------
 class FakePc:
     made = []
@@ -231,6 +296,7 @@ class FakeSession:
     def __init__(self, client, receiver, log=print, step=None):
         self.client, self.receiver, self.step = client, receiver, step
         self.calls = []
+        self.wiped = False
         FakeSession.made.append(self)
 
     async def provision(self, ca, days):
@@ -244,6 +310,7 @@ class FakeSession:
         self.calls.append("deprovision")
         if FakeSession.fail:
             raise prov.ProvisioningError(FakeSession.fail)
+        self.wiped = True
 
     async def get_status(self):
         self.calls.append("status")
@@ -329,18 +396,31 @@ def test_provision_negative(prov_fakes, monkeypatch, capsys, tmp_path, failures)
     assert FakePc.made[0].stopped
 
 
-def test_deprovision(prov_fakes, monkeypatch, capsys):
+def test_deprovision(prov_fakes, keys, monkeypatch, capsys):
     cli(monkeypatch, "deprovision", "--name", "dev")
     out = capsys.readouterr().out
     assert FakeSession.made[0].calls == ["deprovision", "status"]
     assert FakeSession.made[0].receiver is None, "a wipe needs no PC service"
     assert f"deprovisioned: device KEY_READY, new CSR 371 B, key SHA-256 {bytes(range(8)).hex()}" in out
+    # The device deleted its bond with this PC: the PC's keys go too, after the link
+    assert keys == ["AA:BB"]
+    assert "this PC's keys for AA:BB removed (unpaired)" in out
 
 
-def test_deprovision_failure(prov_fakes, monkeypatch):
+def test_deprovision_failure(prov_fakes, keys, monkeypatch):
     FakeSession.fail = "refused"
     with pytest.raises(SystemExit, match="deprovisioning failed: refused"):
         cli(monkeypatch, "deprovision", "--name", "dev")
+    assert keys == [], "nothing was wiped: the keys stay"
+
+
+def test_negative_provisioning_forgets_the_keys_after_its_wipe(prov_fakes, keys, monkeypatch, tmp_path):
+    async def rejections(session, ca, days):
+        await session.deprovision()
+        return 0, FakeSession.outcome(ca)
+    monkeypatch.setattr(setu_client, "provision_with_rejections", rejections)
+    cli(monkeypatch, "provision", "--negative", "--name", "dev", "--ca", str(tmp_path / "ca"))
+    assert keys == ["AA:BB"]
 
 
 # ---- pair / pairstatus / unpair ---------------------------------------------------------

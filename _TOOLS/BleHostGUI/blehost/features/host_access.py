@@ -48,6 +48,13 @@ HINTS = {
                      "against the device's certificate.",
 }
 
+# After a failed or aborted attempt (the page stays usable: try again)
+RETRY_HINT = ("Authentication failed: press Authenticate & pair to try again. If the device "
+              "dropped the link, reconnect on the Device page while its LED1 blinks (the device "
+              "gives back the rest of its host window after a failed attempt; otherwise press "
+              "its Button 3 again).")
+CONNECT_HINT = "Connect to a device (open its host window with Button 3)."
+
 
 def step_position(text: str, current: int = 0):
     """(index, state) of the step list for the page's step text."""
@@ -91,7 +98,7 @@ class HostAccessFeature(Feature):
         self.state_pill.grid(row=0, column=2, sticky="e")
         self.dev_var = tk.StringVar(value="Device: -")
         ttk.Label(dev, textvariable=self.dev_var).pack(anchor="w")
-        self.hint_var = tk.StringVar(value="Connect to a device (open its host window with Button 3).")
+        self.hint_var = tk.StringVar(value=CONNECT_HINT)
         hint = ttk.Label(dev, textvariable=self.hint_var, style="Caption.TLabel", wraplength=360,
                          justify="left")
         hint.pack(anchor="w", fill="x", pady=(sp("xs"), 0))
@@ -264,8 +271,14 @@ class HostAccessFeature(Feature):
         def done(st):
             self._show_status(st)
             self._log("this PC is now the device's trusted host")
+
+        def failed():
+            self.hint_var.set(RETRY_HINT)
+            # Still connected: show what the device thinks now (it went back to a plain link)
+            if self.ctx.link.connected:
+                self.auth_btn.after(200, self._get_status)
         self._log("authenticating this PC to the device")
-        self._run(go(), done)
+        self._run(go(), done, on_fail=failed)
 
     def _forget(self):
         if not messagebox.askyesno(
@@ -279,7 +292,9 @@ class HostAccessFeature(Feature):
             return await self.ctx.link.unpair()
         self._run(go(), lambda r: self._log(f"keys removed on the PC ({r})"))
 
-    def _run(self, coro, on_done, quiet=False):
+    def _run(self, coro, on_done, quiet=False, on_fail=None):
+        """Run coro on the BLE loop. Whatever the outcome, the page is free
+        again afterwards; on_fail() follows a failure or an abort."""
         def finished(result):
             self._future = None
             on_done(result)
@@ -290,11 +305,15 @@ class HostAccessFeature(Feature):
             if not quiet:
                 self.step_var.set("failed")
             self._log(f"failed: {exc}", "warn" if quiet else "error")
+            if on_fail:
+                on_fail()
             self._update()
 
         def aborted():
             self._future = None
             self.step_var.set("aborted")
+            if on_fail:
+                on_fail()
             self._update()
         self._future = self.ctx.run(coro, on_done=finished, on_error=failed, on_cancel=aborted)
         self._update()
@@ -311,6 +330,7 @@ class HostAccessFeature(Feature):
     def on_connected(self, info):
         self.status = None
         self.dev_var.set("Device: -")
+        self.step_var.set("")                   # a new attempt starts from the top
         self._update()
         self.auth_btn.after(200, self._get_status)
 
@@ -318,4 +338,8 @@ class HostAccessFeature(Feature):
         self.cancel()
         self.status = None
         self.dev_var.set("Device: -")
+        # Keep the retry hint after a failed attempt (Windows drops the link
+        # when pairing fails); otherwise say how to connect again
+        if self.step_var.get() not in ("failed", "aborted"):
+            self.hint_var.set(CONNECT_HINT)
         self._update()

@@ -47,6 +47,9 @@ STATES = {"UNPROVISIONED": 0, "OPEN": 1, "HOST_BONDED": 2, "AWAIT_FINISH": 3,
 FLAGS = {"WINDOW_OPEN": 0x01, "HOST_BOND": 0x02}
 RESULTS = {"OK": 0, "BAD_STATE": 1, "PARSE": 2, "BAD_CERT": 3, "BAD_SIG": 4, "HOST_BONDED": 5,
            "NO_PC_SVC": 6, "BUSY": 7, "TIMEOUT": 8, "PAIRING": 9, "INTERNAL": 10, "TRANSFER": 11}
+ADV_COMPANY_ID = 0xFFFF           # Bluetooth SIG: for testing / internal use
+ADV_FORMAT = 1
+ADV_FLAGS = {"PROVISIONED": 0x01, "HOST_BOND": 0x02}
 VERSION = 1
 LABEL = b"PH-HOSTAUTH-1"
 INFO = b"PH-HOSTAUTH-1 passkey"
@@ -139,6 +142,21 @@ def handshake() -> dict:
     }
 
 
+def advert() -> dict:
+    """The manufacturer data in the device's undirected advertising:
+    [company ID u16 LE][format][flags]. A PC holding keys for a device that
+    advertises no host bond knows those keys are stale."""
+    def frame(name, flags):
+        return {"name": name, "hex": (ADV_COMPANY_ID.to_bytes(2, "little")
+                                      + bytes([ADV_FORMAT, flags])).hex()}
+    p, h = ADV_FLAGS["PROVISIONED"], ADV_FLAGS["HOST_BOND"]
+    return {
+        "company_id": ADV_COMPANY_ID, "format": ADV_FORMAT, "len": 4, "flags": ADV_FLAGS,
+        "frames": [frame("unprovisioned", 0), frame("provisioned", p),
+                   frame("provisioned_host", p | h)],
+    }
+
+
 def section() -> dict:
     a, s, f, r = APP_TYPES, STATES, FLAGS, RESULTS
     return {
@@ -170,6 +188,7 @@ def section() -> dict:
             short("result_hello_host_bonded", a["RESULT"], bytes([a["HELLO"], r["HOST_BONDED"], 0])),
             short("refused_fs_cmd", a["REFUSED"], bytes([0x40])),
         ],
+        "advert": advert(),
         "handshake": handshake(),
     }
 

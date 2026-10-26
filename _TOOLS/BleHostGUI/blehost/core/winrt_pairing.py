@@ -48,6 +48,40 @@ async def _pairing(client):
     return en, info.pairing
 
 
+async def _pairing_at(address: str):
+    """The DevicePairing of a BLE address, without a link (the link may be the
+    thing that fails: a board that lost its keys while Windows kept its own)."""
+    en = _enumeration()
+    try:
+        from winrt.windows.devices.bluetooth import BluetoothLEDevice
+    except ImportError as e:
+        raise PairingUnavailable(f"WinRT Bluetooth API not available ({e})") from None
+    try:
+        raw = int(address.replace(":", "").replace("-", ""), 16)
+    except ValueError:
+        raise ValueError(f"not a Bluetooth address: {address!r}") from None
+    device = await BluetoothLEDevice.from_bluetooth_address_async(raw)
+    if device is None:
+        return en, None
+    return en, device.device_information.pairing
+
+
+async def is_paired_address(address: str) -> bool:
+    """Whether Windows holds pairing keys for this address."""
+    _en, pairing = await _pairing_at(address)
+    return bool(pairing is not None and pairing.is_paired)
+
+
+async def unpair_address(address: str) -> str:
+    """Forget this address's keys on this PC, without a link. Returns
+    Windows' result name."""
+    _en, pairing = await _pairing_at(address)
+    if pairing is None or not pairing.is_paired:
+        return "not_paired"
+    result = await pairing.unpair_async()
+    return result.status.name.lower()
+
+
 async def is_paired(client) -> bool:
     _en, pairing = await _pairing(client)
     return bool(pairing.is_paired)
@@ -75,11 +109,17 @@ async def pair_with_pin(client, pin: int, log=print) -> str:
         await pairing.unpair_async()
     custom = pairing.custom
     asked = []
+    errors = []
 
     def on_requested(_sender, args):            # WinRT thread
         asked.append(args.pairing_kind)
-        if args.pairing_kind == kinds.PROVIDE_PIN:
-            args.accept(f"{int(pin):06d}")
+        try:
+            if args.pairing_kind == kinds.PROVIDE_PIN:
+                # pywinrt names the overloads: Accept(String pin) is
+                # accept_with_pin(); accept() takes no argument
+                args.accept_with_pin(f"{int(pin):06d}")
+        except Exception as e:                  # lost on the WinRT thread otherwise
+            errors.append(e)
         # anything else (confirm only, numeric comparison) is left unanswered:
         # Windows then fails the pairing, which is what must happen
 
@@ -92,6 +132,8 @@ async def pair_with_pin(client, pin: int, log=print) -> str:
     status = result.status
     if status not in (en.DevicePairingResultStatus.PAIRED, en.DevicePairingResultStatus.ALREADY_PAIRED):
         extra = f" (Windows asked for {', '.join(k.name for k in asked)})" if asked else ""
+        if errors:
+            extra += f"; answering it failed: {errors[0]!r}"
         raise PairingFailed(f"{status.name.lower()}{extra}")
     level = result.protection_level_used
     if level != en.DevicePairingProtectionLevel.ENCRYPTION_AND_AUTHENTICATION:

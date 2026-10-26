@@ -245,6 +245,16 @@ def emit_host_auth(h: dict, o: list) -> None:
     o.append("")
     emit_shorts("gstar_vecHauthShorts", h["shorts"], o)
 
+    adv = h["advert"]
+    o.append(f"#define VEC_HAUTH_ADV_COMPANY_ID ({adv['company_id']}U)")
+    o.append(f"#define VEC_HAUTH_ADV_FORMAT ({adv['format']}U)")
+    for name, val in adv["flags"].items():
+        o.append(f"#define VEC_HAUTH_ADV_FLAG_{name} ({val}U)")
+    for fr in adv["frames"]:
+        cname = "".join(w.capitalize() for w in fr["name"].split("_"))
+        o.append(c_array(f"gu8ar_vecHauthAdv{cname}", f"VEC_HAUTH_ADV_{fr['name'].upper()}_LEN",
+                         bytes.fromhex(fr["hex"])))
+
     hs = h["handshake"]
     o.append(f"#define VEC_HAUTH_PASSKEY ({hs['passkey']}UL)")
     for key, name in (("ca_cert", "CaCert"), ("device_cert", "DevCert"),

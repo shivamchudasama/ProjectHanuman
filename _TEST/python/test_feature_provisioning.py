@@ -75,7 +75,9 @@ class Ctx:
 
     def __init__(self):
         self.bus = Bus()
-        self.link = type("Link", (), {"connected": True})()
+        self.link = type("Link", (), {"connected": True, "forgets": 0,
+                                      "forget_keys_after_disconnect":
+                                      lambda self: setattr(self, "forgets", self.forgets + 1)})()
         self.setu_client = type("Bx", (), {"available": True, "new_client": lambda s: "device-client"})()
         self.pc = type("Pc", (), {"available": True, "subscribers": 0, "error": None,
                                   "receiver": "pc-receiver"})()
@@ -344,6 +346,7 @@ def test_deprovision_asks_first(tab, dialogs):
     assert Session.made[-1].calls == ["deprovision", "status"]
     assert tab._outcome is None, "a wipe forgets the last result"
     assert "provisioning removed: device KEY_READY" in logged(tab)
+    assert tab.ctx.link.forgets == 1, "the device deleted its bond: the PC's keys go after the link"
 
 
 def test_deprovision_failure(tab, dialogs):
@@ -351,6 +354,7 @@ def test_deprovision_failure(tab, dialogs):
     tab._deprovision()
     tab.ctx.flush()
     assert tab.step_var.get() == "failed"
+    assert tab.ctx.link.forgets == 0, "nothing was wiped"
 
 
 @pytest.mark.parametrize("ext, loader", [(".pem", x509.load_pem_x509_certificate),

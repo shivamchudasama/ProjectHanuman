@@ -49,6 +49,64 @@ def test_constants_match_the_vectors(hv):
     assert ha.MAX_CERT_LEN == hv["cert_max_len"]
 
 
+# ---- the advert ----------------------------------------------------------------------
+def adv_data(frame_hex: str) -> dict:
+    """A wire.json advert frame as bleak hands it over: {company ID: the rest}."""
+    raw = bytes.fromhex(frame_hex)
+    return {int.from_bytes(raw[:2], "little"): raw[2:]}
+
+
+def test_advert_constants_match_the_vectors(hv):
+    adv = hv["advert"]
+    assert (ha.ADV_COMPANY_ID, ha.ADV_FORMAT) == (adv["company_id"], adv["format"])
+    assert (ha.ADV_FLAG_PROVISIONED, ha.ADV_FLAG_HOST_BOND) == (
+        adv["flags"]["PROVISIONED"], adv["flags"]["HOST_BOND"])
+
+
+def test_advert_vectors_decode(hv):
+    frames = {f["name"]: adv_data(f["hex"]) for f in hv["advert"]["frames"]}
+    assert ha.parse_adv(frames["unprovisioned"]) == ha.AdvState(False, False)
+    assert ha.parse_adv(frames["provisioned"]) == ha.AdvState(True, False)
+    assert ha.parse_adv(frames["provisioned_host"]) == ha.AdvState(True, True)
+
+
+@pytest.mark.parametrize("data", [None, {}, {0x0059: bytes([1, 3])}, {0xFFFF: bytes([1])},
+                                  {0xFFFF: bytes([2, 3])}])
+def test_advert_absent_or_foreign(data):
+    # Older firmware, another company's data, too short, another format
+    assert ha.parse_adv(data) is None
+
+
+def _keys(held):
+    removed = []
+
+    async def is_paired(addr):
+        return addr in held
+
+    async def unpair(addr):
+        removed.append(addr)
+        return "unpaired"
+    return is_paired, unpair, removed
+
+
+@pytest.mark.parametrize("flags, held, expect", [
+    (0x00, True, "unpaired"),      # erased: unprovisioned, no host bond
+    (0x01, True, "unpaired"),      # Button 3 held / host forgotten
+    (0x03, True, None),            # a host bond: maybe this PC's, keys stay
+    (0x00, False, None),           # nothing held here
+])
+def test_forget_stale_keys(flags, held, expect):
+    is_paired, unpair, removed = _keys({"AA:BB"} if held else set())
+    got = asyncio.run(ha.forget_stale_keys("AA:BB", {0xFFFF: bytes([1, flags])}, is_paired, unpair))
+    assert got == expect and removed == (["AA:BB"] if expect else [])
+
+
+def test_forget_stale_keys_without_an_advert():
+    is_paired, unpair, removed = _keys({"AA:BB"})
+    assert asyncio.run(ha.forget_stale_keys("AA:BB", {}, is_paired, unpair)) is None
+    assert removed == [], "older firmware says nothing: the keys may be good"
+
+
 def test_short_vectors_decode(hv):
     s = {x["name"]: bytes.fromhex(x["hex"]) for x in hv["shorts"]}
     st = ha.parse_status(s["status_trusted"][2:])

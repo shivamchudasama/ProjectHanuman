@@ -103,7 +103,7 @@ Nothing is stored before the device certificate verifies against the CA, so a re
 ## 5. Sequence
 
 1. Connect. Subscribe to the device's CTRL. Host the provisioner's service (§2) before step 3.
-2. **GET_STATUS** → STATUS. Stop if `state` is NO_KEY. If it is PROVISIONED, stop, or send **DEPROVISION** → RESULT(`0x27`, OK) to start again from a fresh key (certificates issued for the old key no longer match).
+2. **GET_STATUS** → STATUS. Stop if `state` is NO_KEY. If it is PROVISIONED, stop, or send **DEPROVISION** → RESULT(`0x27`, OK) to start again from a fresh key (certificates issued for the old key no longer match). The wipe deletes the device's bond with this host, so once this link ends the host removes its own keys for the device ([../HostAuth/PROTOCOL.md §5](../HostAuth/PROTOCOL.md#5-forgetting-the-host)).
 3. **CSR_REQ**. The device:
    - attaches its SETU Client to the provisioner's service (discovery, CTRL subscription), unless it is already attached;
    - sends the CSR as a transfer with appType `0x23`;

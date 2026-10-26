@@ -92,3 +92,73 @@ def test_a_features_link_is_its_own(bleak):
     tagged = {(e.op, e.note) for e in events if e.dir != "--"}
     assert {("WRITE", "central"), ("READ", "central"), ("NOTIFY", "central"),
             ("CCCD", "[central] subscribe")} <= tagged
+
+
+def test_scan_keeps_the_manufacturer_data(bleak):
+    # The device's advert says whether it has a host bond (protocols/host_auth.parse_adv)
+    dev = types.SimpleNamespace(name="ProjectHanuman")
+    adv = types.SimpleNamespace(local_name="ProjectHanuman", rssi=-50, service_uuids=["ABC"],
+                                manufacturer_data={0xFFFF: b"\x01\x01"})
+
+    async def discover(timeout, return_adv):
+        return {"AA:BB": (dev, adv)}
+    bleak.BleakScanner = types.SimpleNamespace(discover=discover)
+    link = BleLink(Bus(), TrafficTap(Bus()))
+    (r,) = asyncio.run(link.scan(0.1))
+    assert r.service_uuids == ["abc"] and r.manufacturer_data == {0xFFFF: b"\x01\x01"}
+
+
+def _keys(link, monkeypatch, fail=None):
+    removed = []
+
+    async def unpair_address(address):
+        if fail:
+            raise fail
+        removed.append(address)
+        return "unpaired"
+    monkeypatch.setattr(link, "unpair_address", unpair_address)
+    return removed
+
+
+def test_keys_are_forgotten_when_the_link_ends(bleak, monkeypatch):
+    # After a DEPROVISION from this PC: not at once (Windows would drop the link)
+    bus = Bus()
+    link = BleLink(bus, TrafficTap(bus))
+    removed = _keys(link, monkeypatch)
+
+    async def go():
+        await link.connect("AA:BB", "dev")
+        link.forget_keys_after_disconnect()
+        await asyncio.sleep(0)
+        assert removed == [], "kept while the link is up"
+        await link.disconnect()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+    asyncio.run(go())
+    assert removed == ["AA:BB"]
+    assert any("keys for AA:BB forgotten on this PC" in p[1] for t, p in bus.posts if t != LINK_STATE
+               and isinstance(p, tuple) and len(p) == 2 and isinstance(p[1], str))
+
+    # Once only: the next link keeps its keys
+    async def again():
+        await link.connect("AA:BB", "dev")
+        await link.disconnect()
+        await asyncio.sleep(0)
+    asyncio.run(again())
+    assert removed == ["AA:BB"]
+
+
+def test_forgetting_failure_is_logged(bleak, monkeypatch):
+    bus = Bus()
+    link = BleLink(bus, TrafficTap(bus))
+    _keys(link, monkeypatch, fail=RuntimeError("no WinRT"))
+
+    async def go():
+        await link.connect("AA:BB", "dev")
+        link.forget_keys_after_disconnect()
+        link._on_bleak_disconnect(link._client)          # the link drops
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+    asyncio.run(go())
+    assert any(isinstance(p, tuple) and p[0] == "warn" and "could not forget the keys for AA:BB" in p[1]
+               for t, p in bus.posts)

@@ -72,7 +72,7 @@ The contract is in [_DOC/Pairing/PROTOCOL.md](_DOC/Pairing/PROTOCOL.md). Design,
 
 ## Host authentication in brief
 
-- **The host window.** A short press of DK **Button 3** makes the device advertise for 2 minutes (LED1 blinks). Holding it 3 s first forgets the bonded host. After the trusted host's link drops, the window reopens for 60 s by itself.
+- **The host window.** A short press of DK **Button 3** makes the device advertise for 2 minutes (LED1 blinks). Holding it 3 s first forgets the bonded host. After the trusted host's link drops, the window reopens for 60 s by itself; after a failed attempt, for what was left of it.
 - **Credential.** The PC's host credential is a P-256 key and a host certificate from the provisioning CA: CA:FALSE, digitalSignature, extendedKeyUsage **clientAuth**. It is issued on the GUI's Host access page or with `setu_client.py hostcert`. Device certificates must not carry clientAuth, and the CA refuses CSRs that ask for it.
 - **Handshake.**
   - HELLO `0x62` (PC → device): `[1][Nh][Qh][host cert]`.
@@ -80,6 +80,7 @@ The contract is in [_DOC/Pairing/PROTOCOL.md](_DOC/Pairing/PROTOCOL.md). Design,
   - FINISH `0x64`: `[SigH]`, answered by RESULT `0x65`.
   - Each side signs its role label and `T = SHA-256("PH-HOSTAUTH-1" ‖ Nh ‖ Nd ‖ Qh ‖ Qd ‖ H(host cert) ‖ H(device cert))`. Both derive `passkey = HKDF-SHA256(Z, Nh‖Nd, "…passkey"‖T)` mod 10⁶ from the ECDH secret Z.
 - **Pairing.** The PC pairs with LE SC passkey entry, entering the passkey (Windows `ProvidePin`). The device is DisplayOnly on the host link and allows this one pairing. The bond, at level 4, makes the PC the device's one trusted host, and a later connection is trusted once Windows re-encrypts it with the stored keys.
+- **The advert.** While the window is open the device advertises its state as manufacturer data, `FF FF 01 <flags>` (provisioned `0x01`, host bonded `0x02`). A PC that holds keys for a device without a host bond knows they are stale (the device was erased, wiped, or forgot its host) and removes them before connecting.
 - **The gate.** Only the trusted host reaches hex upload, files, UDS, provisioning (DEPROVISION included) and Pairing CONTROL. Other links get REFUSED `0x66`, a rejected START, or ATT `0x08`. STATUS_REQ `0x60` → STATUS `0x61` (`[state][flags]`) is always open.
 
 The contract is in [_DOC/HostAuth/PROTOCOL.md](_DOC/HostAuth/PROTOCOL.md). Design, security notes and limitations are in [_DOC/HostAuth/README.md](_DOC/HostAuth/README.md).
@@ -142,13 +143,13 @@ Below the linker's FLASH/RAM summary, the build prints the same figures per modu
 
 The firmware runs without the CAN click: it logs that the controller is not ready and carries on. Before wiring the click, set the DK's VDD to 3.3 V in nRF Connect Board Configurator (it ships at 1.8 V); the wiring is in [_DOC/CAN/README.md](_DOC/CAN/README.md#1-hardware).
 
-After changing the layout or configuration, do a pristine build (`-p always`). A chip erase also erases the device's key, so the device makes a new key and CSR and has to be provisioned again.
+After changing the layout or configuration, do a pristine build (`-p always`). A chip erase also erases the device's key, so the device makes a new key and CSR and has to be provisioned again; its address stays, and it advertises no host bond, so a PC that was its host removes its old pairing keys before connecting.
 
 ## Using it from a PC
 
 Install the requirements (`pip install -r _TOOLS/BleHostGUI/requirements.txt`: bleak, cryptography, Pillow) and run the GUI with `python _TOOLS/BleHostGUI/ble_host_gui.py`. Provisioning and host authentication need Windows 10/11 and an adapter that supports the peripheral role, because the PC hosts its own GATT service; host authentication also pairs through WinRT.
 
-To reach a device, press its **Button 3** (LED1 blinks) and connect. An unprovisioned device takes provisioning only: provision it (Provisioning page), then authenticate the PC on the **Host access** page. The PC needs a host credential, issued there from the CA folder (or `setu_client.py hostcert`). "Authenticate & pair" runs the handshake and Windows pairs without a prompt. From then on every page works on that device, and later connections are trusted at once. To move a device to another PC, hold its Button 3 for 3 s.
+To reach a device, press its **Button 3** (LED1 blinks) and connect. An unprovisioned device takes provisioning only: provision it (Provisioning page), then authenticate the PC on the **Host access** page. The PC needs a host credential, issued there from the CA folder (or `setu_client.py hostcert`). "Authenticate & pair" runs the handshake and Windows pairs without a prompt. From then on every page works on that device, and later connections are trusted at once. To move a device to another PC, hold its Button 3 for 3 s. A device that has forgotten this PC (Button 3 held, a wipe, a chip erase) advertises that it has no host bond, and the GUI and `setu_client.py` remove Windows' old keys for it before connecting (Windows would encrypt with them and drop every link, 0x13); after its own DEPROVISION the PC removes them once the link ends. Several devices can each trust the same PC; the GUI reaches them one at a time (several at once is planned).
 
 The command-line client [`_TOOLS/BleHostGUI/setu_client.py`](_TOOLS/BleHostGUI/setu_client.py) does the same (`--help` lists all options):
 

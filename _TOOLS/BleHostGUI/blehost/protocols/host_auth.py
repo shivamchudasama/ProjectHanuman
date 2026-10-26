@@ -55,6 +55,12 @@ RESULT_STATUS = {0x00: "OK", 0x01: "BAD_STATE", 0x02: "PARSE", 0x03: "BAD_CERT",
 ST_OK = 0x00
 CERT_STATUS = {0x03: "PARSE", 0x04: "NOT_CA", 0x05: "BAD_SIG", 0x08: "BAD_PROFILE", 0x0A: "INTERNAL"}
 
+# Manufacturer data in the device's undirected advertising (_DOC/HostAuth/PROTOCOL.md §1):
+# [company ID u16 LE][format][flags]; bleak hands over {company ID: [format][flags]}
+ADV_COMPANY_ID = 0xFFFF            # Bluetooth SIG: for testing / internal use
+ADV_FORMAT = 1
+ADV_FLAG_PROVISIONED, ADV_FLAG_HOST_BOND = 0x01, 0x02
+
 VERSION = 1
 NONCE_LEN, POINT_LEN, SIG_LEN, HASH_LEN = 16, 65, 64, 32
 HELLO_HDR_LEN = 1 + NONCE_LEN + POINT_LEN
@@ -99,6 +105,40 @@ class AuthStatus:
     @property
     def trusted(self) -> bool:
         return self.state == TRUSTED
+
+
+@dataclass
+class AdvState:
+    """What the device advertises about itself (manufacturer data)."""
+    provisioned: bool
+    host_bonded: bool
+
+
+def parse_adv(manufacturer_data: dict) -> Optional[AdvState]:
+    """The device's advertised state from a scan's manufacturer data
+    ({company ID: payload}), or None: an older firmware, another device, or
+    another format."""
+    p = (manufacturer_data or {}).get(ADV_COMPANY_ID)
+    if p is None or len(p) < 2 or p[0] != ADV_FORMAT:
+        return None
+    return AdvState(bool(p[1] & ADV_FLAG_PROVISIONED), bool(p[1] & ADV_FLAG_HOST_BOND))
+
+
+async def forget_stale_keys(address: str, manufacturer_data: dict,
+                            is_paired: Callable[[str], Awaitable[bool]],
+                            unpair: Callable[[str], Awaitable[str]]) -> Optional[str]:
+    """Before connecting: a device that advertises no host bond has none, so
+    keys this PC holds for its address are stale (it was wiped or erased, or
+    forgot its host). Windows would encrypt with them and drop every link, so
+    they are removed. Returns the unpair result, or None when nothing was done
+    (no advert, a host bond, or no keys here). is_paired/unpair work on an
+    address without a link (core/winrt_pairing.py); their errors propagate."""
+    st = parse_adv(manufacturer_data)
+    if st is None or st.host_bonded:
+        return None
+    if not await is_paired(address):
+        return None
+    return await unpair(address)
 
 
 def parse_status(p: bytes) -> AuthStatus:

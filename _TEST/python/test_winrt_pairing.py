@@ -58,11 +58,14 @@ class World:
         self.level = Level.ENCRYPTION_AND_AUTHENTICATION
         self.kind = Kinds.PROVIDE_PIN          # what Windows asks the app for
         self.accepted = []
+        self.accept_raises = None
         self.asked_kinds = None
         self.asked_level = None
         self.unpairs = 0
         self.handler_removed = False
         self.ids = []
+        self.addresses = []
+        self.known = {0xC6C0BE27A3CF}            # addresses Windows knows
 
 
 class Args:
@@ -70,7 +73,13 @@ class Args:
         self.world = world
         self.pairing_kind = kind
 
-    def accept(self, pin=None):
+    # pywinrt's names for the Accept overloads (DevicePairingRequestedEventArgs)
+    def accept(self):
+        self.world.accepted.append(None)
+
+    def accept_with_pin(self, pin):
+        if self.world.accept_raises:
+            raise self.world.accept_raises
         self.world.accepted.append(pin)
 
 
@@ -125,10 +134,23 @@ def world(monkeypatch):
     en.DevicePairingKinds = Kinds
     en.DevicePairingProtectionLevel = Level
     en.DevicePairingResultStatus = Status
+    class BluetoothLEDevice:
+        @staticmethod
+        def from_bluetooth_address_async(raw):
+            w.addresses.append(raw)
+            if raw not in w.known:
+                return _Done(None)
+            return _Done(types.SimpleNamespace(device_information=types.SimpleNamespace(
+                pairing=Pairing(w))))
+
+    bt = types.ModuleType("winrt.windows.devices.bluetooth")
+    bt.BluetoothLEDevice = BluetoothLEDevice
     for name in ("winrt", "winrt.windows", "winrt.windows.devices"):
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
     sys.modules["winrt.windows.devices"].enumeration = en
+    sys.modules["winrt.windows.devices"].bluetooth = bt
     monkeypatch.setitem(sys.modules, "winrt.windows.devices.enumeration", en)
+    monkeypatch.setitem(sys.modules, "winrt.windows.devices.bluetooth", bt)
     monkeypatch.setattr(wp.sys, "platform", "win32")
     return w
 
@@ -162,6 +184,26 @@ def test_other_ceremonies_are_not_accepted(world):
     assert world.handler_removed
 
 
+def test_handler_error_is_reported(world):
+    # an exception on the WinRT thread leaves the request unanswered (Windows:
+    # RejectedByHandler); it must reach the caller, not vanish
+    world.accept_raises = TypeError("boom")
+    world.status = Status.AUTHENTICATION_FAILURE
+    with pytest.raises(wp.PairingFailed, match="PROVIDE_PIN.*answering it failed.*boom"):
+        run(wp.pair_with_pin(client(), 1))
+    assert world.handler_removed
+
+
+def test_fake_matches_pywinrt():
+    # the fake's method names must be pywinrt's; checked where winrt is installed
+    try:
+        from winrt.windows.devices import enumeration as real
+    except ImportError:
+        pytest.skip("winrt not installed")
+    names = {n for n in dir(real.DevicePairingRequestedEventArgs) if n.startswith("accept")}
+    assert {"accept", "accept_with_pin"} <= names
+
+
 def test_unauthenticated_result_is_a_failure(world):
     world.level = Level.ENCRYPTION
     with pytest.raises(wp.PairingFailed, match="without authentication"):
@@ -190,6 +232,31 @@ def test_unpair(world):
     world.paired = True
     assert run(wp.unpair(client())) == "unpaired"
     assert world.unpairs == 1
+
+
+def test_by_address_without_a_link(world):
+    # A board that lost its keys while Windows kept its own: no link to use
+    assert not run(wp.is_paired_address("C6:C0:BE:27:A3:CF"))
+    assert run(wp.unpair_address("C6:C0:BE:27:A3:CF")) == "not_paired"
+    world.paired = True
+    assert run(wp.is_paired_address("c6-c0-be-27-a3-cf"))
+    assert run(wp.unpair_address("C6:C0:BE:27:A3:CF")) == "unpaired"
+    assert world.unpairs == 1 and not world.paired
+    assert world.addresses[0] == 0xC6C0BE27A3CF
+    # An address Windows has never seen
+    assert not run(wp.is_paired_address("00:11:22:33:44:55"))
+    assert run(wp.unpair_address("00:11:22:33:44:55")) == "not_paired"
+    with pytest.raises(ValueError, match="not a Bluetooth address"):
+        run(wp.is_paired_address("board-1"))
+
+
+def test_by_address_unavailable(world, monkeypatch):
+    monkeypatch.setitem(sys.modules, "winrt.windows.devices.bluetooth", None)
+    with pytest.raises(wp.PairingUnavailable, match="Bluetooth API"):
+        run(wp.is_paired_address("C6:C0:BE:27:A3:CF"))
+    monkeypatch.setattr(wp.sys, "platform", "linux")
+    with pytest.raises(wp.PairingUnavailable, match="Windows"):
+        run(wp.unpair_address("C6:C0:BE:27:A3:CF"))
 
 
 def test_unavailable(world, monkeypatch):
@@ -228,3 +295,9 @@ def test_ble_link_pairs_its_client(world):
     assert run(link.is_paired())
     assert run(link.unpair()) == "unpaired"
     assert [op for op, _ in tap.infos] == ["PAIR", "PAIR", "PAIR"]
+    # By address: no link needed
+    link._client = None
+    world.paired = True
+    assert run(link.is_paired_address("C6:C0:BE:27:A3:CF"))
+    assert run(link.unpair_address("C6:C0:BE:27:A3:CF")) == "unpaired"
+    assert "C6:C0:BE:27:A3:CF" in tap.infos[-1][1]

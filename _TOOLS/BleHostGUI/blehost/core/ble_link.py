@@ -13,6 +13,7 @@ once) makes more BleLinks with primary=False and a label: they post no
 LINK_STATE, and their traffic is tagged with the label.
 """
 
+import asyncio
 import enum
 import sys
 from dataclasses import dataclass, field
@@ -36,6 +37,7 @@ class ScanResult:
     name: str
     rssi: int
     service_uuids: list = field(default_factory=list)
+    manufacturer_data: dict = field(default_factory=dict)   # {company ID: payload}
 
 
 class GattFacade:
@@ -77,6 +79,7 @@ class BleLink:
         self._connect_hooks = []
         self._disconnect_hooks = []
         self._fast_link = None          # (WinRT device, changed-event token, request)
+        self._forget_after = None       # address whose PC keys go when the link ends
 
     # ---- hooks -------------------------------------------------------------
     def add_connect_hook(self, coro_fn):
@@ -120,7 +123,8 @@ class BleLink:
         for addr, (dev, adv) in found.items():
             self._devices[addr] = dev
             results.append(ScanResult(addr, adv.local_name or dev.name or "", adv.rssi,
-                                      [u.lower() for u in adv.service_uuids]))
+                                      [u.lower() for u in adv.service_uuids],
+                                      dict(adv.manufacturer_data or {})))
         self._info("SCAN", f"{len(results)} device(s) found")
         return results
 
@@ -172,6 +176,7 @@ class BleLink:
         self.gatt = None
         self._release_fast_link()
         self._info("DISCONNECT", reason)
+        self._forget_keys_now()
         for hook in self._disconnect_hooks:
             try:
                 hook(self, reason)
@@ -283,3 +288,44 @@ class BleLink:
         from . import winrt_pairing
 
         return await winrt_pairing.is_paired(self._require_client())
+
+    # A board that lost its keys (chip erase, wipe, DEPROVISION, Button 3 held)
+    # while Windows kept its own cannot be reached: Windows encrypts with the
+    # old keys, the board has none, Windows drops the link (0x13). These work
+    # without a link.
+    async def is_paired_address(self, address: str) -> bool:
+        from . import winrt_pairing
+
+        return await winrt_pairing.is_paired_address(address)
+
+    async def unpair_address(self, address: str) -> str:
+        from . import winrt_pairing
+
+        result = await winrt_pairing.unpair_address(address)
+        self._info("PAIR", f"keys for {address} forgotten on this PC ({result})")
+        return result
+
+    def forget_keys_after_disconnect(self):
+        """The device forgot this PC (DEPROVISION from here): remove this PC's
+        keys for it once the link ends. Not at once: Windows would drop the
+        link, and the device may have no host window open to come back."""
+        self._forget_after = self.info.get("address")
+
+    def _forget_keys_now(self):
+        addr, self._forget_after = self._forget_after, None
+        if not addr:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return                              # not on the loop: nothing to run it
+        loop.create_task(self._forget_keys(addr))
+
+    async def _forget_keys(self, addr: str):
+        try:
+            result = await self.unpair_address(addr)
+        except Exception as e:                  # noqa: BLE001 - logged, never fatal
+            self._log("warn", f"could not forget the keys for {addr} on this PC: {e}")
+        else:
+            self._log("info", f"keys for {addr} forgotten on this PC ({result}): the device "
+                              "no longer has its own")
