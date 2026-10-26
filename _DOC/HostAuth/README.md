@@ -49,7 +49,7 @@ This closes audit finding F1, the unauthenticated host link ([../Audit/FINDINGS.
 - **One gate.** All the host's application traffic enters through the SETU router, so one predicate there covers hex upload, files, UDS and provisioning. The Pairing service is the only other writable entry, and checks the same trust. During a pairing run, the run's filter (peer link) replaces the gate.
 - **Provisioning is the bootstrap.** An unprovisioned device has no certificate, so no host can authenticate to it. It accepts only provisioning, and only after a button press opens the window. This is the factory step.
 - **One buffer.** HELLO (up to 1106 bytes) is no longer needed once the transcript is made, so CHALLENGE (up to 1170 bytes) is built in the same buffer. The buffer stays reserved until the CHALLENGE transfer ends, even if the handshake fails meanwhile.
-- **The window.** Not advertising takes the device off the air for anyone who wants to attack it. The grace window after a trusted host's link loss keeps long operations (an ECU flash job reconnect) working without a hand on the button. A bonded pair peripheral still advertises, but directed to its central only.
+- **The window.** Not advertising takes the device off the air for anyone who wants to attack it. The grace window after a trusted host's link loss keeps long operations (an ECU flash job reconnect) working without a hand on the button. A host that fails gets the rest of the window it closed (Windows drops the link when pairing fails), so a retry does not need another press; it cannot stretch the window beyond the press. A bonded pair peripheral still advertises, but directed to its central only.
 
 ## Security notes
 

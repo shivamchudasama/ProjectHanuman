@@ -322,6 +322,7 @@ static void sv_ResetModule(void)
    (void)atomic_ptr_set(&st_hostConn, NULL);
    (void)atomic_set(&st_hostBonded, 0);
    (void)atomic_set(&st_window, 0);
+   si64_windowEndMs = 0;
    (void)atomic_set(&st_bufBusy, 0);
    sb_challengeTx = false;
    (void)atomic_set(&st_passkey, 0);
@@ -1073,6 +1074,41 @@ static void test_HostConnectionClosesTheWindow(void)
    TEST_ASSERT_EQUAL_UINT32(2U, su32_refresh);
 }
 
+static void test_FailedHostGetsTheRestOfTheWindow(void)
+{
+   gv_HostAuth_OpenWindow();
+   sv_Run();
+   sv_AdvanceMs(10000);
+   // The pairing fails and Windows drops the link
+   sv_ToAwaitPairing();
+   TEST_ASSERT_FALSE(gb_HostAuth_WindowOpen());
+   sv_AdvanceMs(5000);
+   gv_HostAuth_OnHostDisconnected(&sst_host);
+   sv_Run();
+   TEST_ASSERT_TRUE_MESSAGE(gb_HostAuth_WindowOpen(), "the window comes back to retry");
+   // ... only until the button's window would have ended
+   sv_AdvanceMs(CONFIG_HOST_AUTH_WINDOW_MS - 15000 - 1);
+   TEST_ASSERT_TRUE(gb_HostAuth_WindowOpen());
+   sv_AdvanceMs(1);
+   TEST_ASSERT_FALSE(gb_HostAuth_WindowOpen());
+   // Once it ended, an untrusted host's loss opens nothing
+   sv_Connect(&sst_host);
+   gv_HostAuth_OnHostDisconnected(&sst_host);
+   sv_Run();
+   TEST_ASSERT_FALSE(gb_HostAuth_WindowOpen());
+}
+
+static void test_HostLeavingAfterTheWindowEndedOpensNothing(void)
+{
+   gv_HostAuth_OpenWindow();
+   sv_Run();
+   sv_Connect(&sst_host);
+   sv_AdvanceMs(CONFIG_HOST_AUTH_WINDOW_MS);
+   gv_HostAuth_OnHostDisconnected(&sst_host);
+   sv_Run();
+   TEST_ASSERT_FALSE(gb_HostAuth_WindowOpen());
+}
+
 static void test_TrustedHostLossOpensTheGraceWindow(void)
 {
    sv_ToTrusted();
@@ -1236,6 +1272,8 @@ int main(void)
    RUN_TEST(test_WindowOpensAndCloses);
    RUN_TEST(test_WindowPressAgainRestartsIt);
    RUN_TEST(test_HostConnectionClosesTheWindow);
+   RUN_TEST(test_FailedHostGetsTheRestOfTheWindow);
+   RUN_TEST(test_HostLeavingAfterTheWindowEndedOpensNothing);
    RUN_TEST(test_TrustedHostLossOpensTheGraceWindow);
    RUN_TEST(test_WindowFlagInStatus);
    RUN_TEST(test_HoldForgetsTheHostAndOpensTheWindow);

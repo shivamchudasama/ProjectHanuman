@@ -318,6 +318,14 @@ static bt_addr_le_t sst_hostAddr;
 static atomic_t st_window = ATOMIC_INIT(0);
 
 /**
+ * @var           si64_windowEndMs
+ * @brief         Uptime at which the last opened window ends; kept when a host
+ *                connection closes the window early, so an untrusted host's
+ *                loss gives back the rest of it (0: none). Thread only.
+ */
+static int64_t si64_windowEndMs;
+
+/**
  * @var           st_bufBusy
  * @brief         1 from an accepted HELLO START until su8ar_buf is free again:
  *                HELLO refused or failed, or the CHALLENGE transfer ended (or
@@ -1268,6 +1276,7 @@ static void sv_SetWindow(bool b_open, int32_t i32_ms)
    // Check if it opens: it closes again after i32_ms
    if (b_open)
    {
+      si64_windowEndMs = k_uptime_get() + i32_ms;
       (void)k_work_reschedule(&sst_windowWork, K_MSEC(i32_ms));
       APP_LOG_INF("host window open for %d ms", (int)i32_ms);
    }
@@ -1441,6 +1450,16 @@ static void sv_HandleEvent(const HostAuthEvent_T *stpt_event)
          {
             sv_SetWindow(true, CONFIG_HOST_AUTH_GRACE_MS);
          }
+         // Check if an untrusted host left (a failed attempt, Windows drops the
+         // link): the window it closed reopens for the time it had left
+         else if (si64_windowEndMs > k_uptime_get())
+         {
+            sv_SetWindow(true, (int32_t)(si64_windowEndMs - k_uptime_get()));
+         }
+         else
+         {
+            // No window left to give back
+         }
          sv_UpdateLed();
          break;
 
@@ -1494,6 +1513,7 @@ static void sv_HandleEvent(const HostAuthEvent_T *stpt_event)
          break;
 
       case eHAE_WINDOW_CLOSED:
+         si64_windowEndMs = 0;
          sv_SetWindow(false, 0);
          APP_LOG_INF("host window closed");
          break;

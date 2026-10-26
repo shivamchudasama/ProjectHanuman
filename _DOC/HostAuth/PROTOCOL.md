@@ -20,6 +20,7 @@ The PC then pairs with **LE Secure Connections passkey entry**, using that passk
 - Holding Button 3 for `CONFIG_HOST_AUTH_FORGET_HOLD_MS` (3 s) first **forgets the bonded host**: its bond, its record and its link. It then opens the window for a new host.
 - When the trusted host's link drops, the window opens by itself for `CONFIG_HOST_AUTH_GRACE_MS` (60 s), so the host can reconnect.
 - The window closes when a host connects, or when its time runs out.
+- When a host that is not trusted disconnects (a failed attempt: Windows drops the link when pairing fails), the window reopens for the time it had left, so the host can reconnect and try again. It never extends the window: once its time has run out, it stays closed.
 - LED1 (`DK_LED2`) blinks while the window is open, and is lit while the trusted host is connected.
 
 While the window is open, the device advertises connectable and undirected. The data is as before: the Pairing service UUID once provisioned, the SETU UUID before ([../Pairing/PROTOCOL.md §2](../Pairing/PROTOCOL.md#2-gatt-the-pairing-service)).

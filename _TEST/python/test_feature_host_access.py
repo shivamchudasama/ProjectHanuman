@@ -322,6 +322,44 @@ def test_authenticate_failure(page):
     page.ctx.flush()
     assert page.step_var.get() == "failed"
     assert ("error", "host access: failed: another host is bonded") in page.ctx.logs
+    # The page stays usable: retry at once, and the device's state is read again
+    assert page.hint_var.get() == fh.RETRY_HINT
+    assert "auth" in enabled(page) and not page.busy
+    assert page.auth_btn.after_calls and page.auth_btn.after_calls[-1][1] == page._get_status
+
+
+def test_retry_after_windows_drops_the_link(page):
+    # The pairing fails, Windows drops the link, the user reconnects and retries
+    page._issue()
+    Session.fail = "pairing failed: rejected_by_handler"
+    page._authenticate()
+    page.ctx.flush()
+    page.ctx.link.connected = False
+    page.on_disconnected("link lost")
+    assert page.hint_var.get() == fh.RETRY_HINT, "the hint says how to retry"
+    assert enabled(page) == set()
+    page.ctx.link.connected = True
+    page.on_connected({"address": "AA"})
+    assert page.step_var.get() == "", "the step list starts again"
+    assert "auth" in enabled(page)
+    Session.fail = None
+    page._authenticate()
+    page.ctx.flush()
+    assert page.step_var.get() == "trusted" and page.dev_var.get() == "Device: TRUSTED"
+
+
+def test_abort_allows_a_retry(page):
+    page._issue()
+    page.ctx.hold = True
+    page._authenticate()
+    page.cancel()
+    assert page.hint_var.get() == fh.RETRY_HINT and "auth" in enabled(page)
+
+
+def test_plain_disconnect_resets_the_hint(page):
+    page.hint_var.set(fh.HINTS["OPEN"])
+    page.on_disconnected("link lost")
+    assert page.hint_var.get() == fh.CONNECT_HINT
 
 
 def test_forget_asks_first(page, dialogs):

@@ -45,7 +45,7 @@ The six users:
   - Handshake: HELLO `[1][Nh][Qh][host cert]` → CHALLENGE `[1][Nd][Qd][SigD][device cert]`, sent with the device's Client to the PC's service → FINISH `[SigH]` → RESULT. Both signatures are over T = SHA-256 of the label, nonces, ephemeral points and both certificate hashes, with role labels "dev"/"host".
   - Passkey: HKDF-SHA256 of the ECDH secret, mod 10⁶. The PC pairs with LE SC passkey entry (Windows `ProvidePin`, `core/winrt_pairing.py`); the host link's SMP callbacks (`bt_conn_auth_cb_overlay()`, `app_passkey`: DisplayOnly) allow only that pairing.
   - The bonded host at level 4 is the one trusted host (record `hauth/host`). The router's gate admits only it, except for `0x60`–`0x6F` and GET_STATUS `0x20`, plus `0x20`–`0x2F` on an unprovisioned device; Pairing CONTROL gives others ATT `0x08`.
-  - DK Button 3 (SW3): a press opens the host window (120 s undirected advertising, LED1 blinks); held 3 s it forgets the host first. A trusted host's link loss opens a 60 s grace window.
+  - DK Button 3 (SW3): a press opens the host window (120 s undirected advertising, LED1 blinks); held 3 s it forgets the host first. A trusted host's link loss opens a 60 s grace window; an untrusted host's gives back the rest of the window it closed.
 
   Contract: `_DOC/HostAuth/PROTOCOL.md`; design, security and limitations: `_DOC/HostAuth/README.md`.
 

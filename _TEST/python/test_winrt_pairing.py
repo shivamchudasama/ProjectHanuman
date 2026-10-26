@@ -58,6 +58,7 @@ class World:
         self.level = Level.ENCRYPTION_AND_AUTHENTICATION
         self.kind = Kinds.PROVIDE_PIN          # what Windows asks the app for
         self.accepted = []
+        self.accept_raises = None
         self.asked_kinds = None
         self.asked_level = None
         self.unpairs = 0
@@ -70,7 +71,13 @@ class Args:
         self.world = world
         self.pairing_kind = kind
 
-    def accept(self, pin=None):
+    # pywinrt's names for the Accept overloads (DevicePairingRequestedEventArgs)
+    def accept(self):
+        self.world.accepted.append(None)
+
+    def accept_with_pin(self, pin):
+        if self.world.accept_raises:
+            raise self.world.accept_raises
         self.world.accepted.append(pin)
 
 
@@ -160,6 +167,26 @@ def test_other_ceremonies_are_not_accepted(world):
         run(wp.pair_with_pin(client(), 123456))
     assert world.accepted == []
     assert world.handler_removed
+
+
+def test_handler_error_is_reported(world):
+    # an exception on the WinRT thread leaves the request unanswered (Windows:
+    # RejectedByHandler); it must reach the caller, not vanish
+    world.accept_raises = TypeError("boom")
+    world.status = Status.AUTHENTICATION_FAILURE
+    with pytest.raises(wp.PairingFailed, match="PROVIDE_PIN.*answering it failed.*boom"):
+        run(wp.pair_with_pin(client(), 1))
+    assert world.handler_removed
+
+
+def test_fake_matches_pywinrt():
+    # the fake's method names must be pywinrt's; checked where winrt is installed
+    try:
+        from winrt.windows.devices import enumeration as real
+    except ImportError:
+        pytest.skip("winrt not installed")
+    names = {n for n in dir(real.DevicePairingRequestedEventArgs) if n.startswith("accept")}
+    assert {"accept", "accept_with_pin"} <= names
 
 
 def test_unauthenticated_result_is_a_failure(world):

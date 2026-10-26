@@ -72,7 +72,7 @@ The contract is in [_DOC/Pairing/PROTOCOL.md](_DOC/Pairing/PROTOCOL.md). Design,
 
 ## Host authentication in brief
 
-- **The host window.** A short press of DK **Button 3** makes the device advertise for 2 minutes (LED1 blinks). Holding it 3 s first forgets the bonded host. After the trusted host's link drops, the window reopens for 60 s by itself.
+- **The host window.** A short press of DK **Button 3** makes the device advertise for 2 minutes (LED1 blinks). Holding it 3 s first forgets the bonded host. After the trusted host's link drops, the window reopens for 60 s by itself; after a failed attempt, for what was left of it.
 - **Credential.** The PC's host credential is a P-256 key and a host certificate from the provisioning CA: CA:FALSE, digitalSignature, extendedKeyUsage **clientAuth**. It is issued on the GUI's Host access page or with `setu_client.py hostcert`. Device certificates must not carry clientAuth, and the CA refuses CSRs that ask for it.
 - **Handshake.**
   - HELLO `0x62` (PC → device): `[1][Nh][Qh][host cert]`.

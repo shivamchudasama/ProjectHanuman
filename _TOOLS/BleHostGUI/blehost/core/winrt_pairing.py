@@ -75,11 +75,17 @@ async def pair_with_pin(client, pin: int, log=print) -> str:
         await pairing.unpair_async()
     custom = pairing.custom
     asked = []
+    errors = []
 
     def on_requested(_sender, args):            # WinRT thread
         asked.append(args.pairing_kind)
-        if args.pairing_kind == kinds.PROVIDE_PIN:
-            args.accept(f"{int(pin):06d}")
+        try:
+            if args.pairing_kind == kinds.PROVIDE_PIN:
+                # pywinrt names the overloads: Accept(String pin) is
+                # accept_with_pin(); accept() takes no argument
+                args.accept_with_pin(f"{int(pin):06d}")
+        except Exception as e:                  # lost on the WinRT thread otherwise
+            errors.append(e)
         # anything else (confirm only, numeric comparison) is left unanswered:
         # Windows then fails the pairing, which is what must happen
 
@@ -92,6 +98,8 @@ async def pair_with_pin(client, pin: int, log=print) -> str:
     status = result.status
     if status not in (en.DevicePairingResultStatus.PAIRED, en.DevicePairingResultStatus.ALREADY_PAIRED):
         extra = f" (Windows asked for {', '.join(k.name for k in asked)})" if asked else ""
+        if errors:
+            extra += f"; answering it failed: {errors[0]!r}"
         raise PairingFailed(f"{status.name.lower()}{extra}")
     level = result.protection_level_used
     if level != en.DevicePairingProtectionLevel.ENCRYPTION_AND_AUTHENTICATION:
