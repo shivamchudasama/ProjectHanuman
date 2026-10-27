@@ -95,7 +95,10 @@ shows the errno behind each.
    status BUSY.
 4. A CMD shorter than 2 bytes is ignored (no REPLY): it has no `seq`.
 
-To read a whole file: OPENR, READ until a REPLY without data, CLOSE. To write one: OPENW, WRITE
+To read a whole file: OPENR, READ until a REPLY without data, CLOSE. The PC tools run that loop
+themselves: the Files page's Read and `read [N]` on its command line or in `setu_client.py fs`
+send READs from the current position until N bytes or the end of the file, Download… and
+`fs get` the whole OPENR … CLOSE. To write one: OPENW, WRITE
 in pieces of at most 240 bytes, CLOSE (DELFILE first to replace a longer file).
 
 ## 5. Examples

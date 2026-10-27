@@ -118,8 +118,8 @@ def test_argument_limits():
 @pytest.mark.parametrize("line, op, arg", [
     ("mkdir FW", "MKDIR", b"FW"), ("cd /FLASH_DISK:/FW", "CD", b"/FLASH_DISK:/FW"),
     ("openr a.txt", "OPENR", b"a.txt"), ("openw  a.txt ", "OPENW", b"a.txt"),
-    ("write hello world", "WRITE", b"hello world"), ("read", "READ", b""), ("read 16", "READ", b"\x10\x00"),
-    ("read 999999", "READ", b"\xff\xff"), ("ls", "LS", b""), ("delfile /FW/a", "DELFILE", b"/FW/a"),
+    ("write hello world", "WRITE", b"hello world"), ("read", "READ", None), ("read 16", "READ", 16),
+    ("read 999999", "READ", 999999), ("ls", "LS", b""), ("delfile /FW/a", "DELFILE", b"/FW/a"),
     ("deldir FW", "DELDIR", b"FW"), ("close", "CLOSE", b""), ("abort", "ABORT", b""), ("help", "help", b""),
 ])
 def test_parse_line(line, op, arg):
@@ -179,6 +179,67 @@ def test_session_write_then_read_back(session, fsdev):
     assert run(session.read()) == data[16:16 + 239]
     run(session.close())
     assert run(session.get("/FW/a.bin")) == data
+
+
+def reads(fsdev) -> list:
+    """The arguments of the READs the device received."""
+    return [a for _, o, a in fsdev.commands if o == fsp.OPS["READ"]]
+
+
+def test_read_to_the_end_from_the_position(session, fsdev):
+    data = bytes(range(256)) * 3
+    fsdev.files["/FLASH_DISK:/f"] = bytearray(data)
+    run(session.openr("/f"))
+    run(session.read(16))
+    progress = []
+    r = run(session.read_to(progress=progress.append))
+    assert r.ok and r.eof and r.op == fsp.OPS["READ"] and r.data == data[16:]
+    # 752 bytes: four READs with data, then one that finds the end
+    assert reads(fsdev)[1:] == [b""] * 5 and progress == [239, 478, 717, 752]
+    assert run(session.read_to()).data == b"" and run(session.read_to()).eof
+
+
+def test_read_to_a_count(session, fsdev):
+    fsdev.files["/FLASH_DISK:/f"] = bytearray(range(256)) * 4
+    run(session.openr("/f"))
+    r = run(session.read_to(300))
+    assert r.data == bytes(range(256)) + bytes(range(44)) and not r.eof
+    assert reads(fsdev) == [b"\xef\x00", b"\x3d\x00"], "239 then 61"
+    r = run(session.read_to(5))
+    assert r.data == bytes(range(44, 49)) and len(reads(fsdev)) == 3
+    # More than is left: everything up to the end, and the end
+    r = run(session.read_to(100000))
+    assert len(r.data) == 1024 - 305 and r.eof
+    with pytest.raises(ValueError):
+        run(session.read_to(0))
+
+
+def test_read_to_stops_when_asked(session, fsdev):
+    fsdev.files["/FLASH_DISK:/f"] = bytearray(1000)
+    run(session.openr("/f"))
+    progress = []
+    r = run(session.read_to(progress=progress.append, stop=lambda: len(progress) == 2))
+    assert r.ok and not r.eof and len(r.data) == 478 and len(reads(fsdev)) == 2
+    assert len(run(session.read_to()).data) == 1000 - 478, "the next read carries on"
+
+
+def test_read_to_keeps_the_data_before_a_failure(session, fsdev):
+    fsdev.files["/FLASH_DISK:/f"] = bytearray(b"x" * 600)
+    real = fsdev.handle
+
+    def handle(payload):
+        if payload[1] == fsp.OPS["READ"] and len(reads(fsdev)) == 2:
+            fsdev.fail["READ"] = 9
+        return real(payload)
+    fsdev.handle = handle
+    run(session.openr("/f"))
+    r = run(session.read_to())
+    assert not r.ok and r.status_name == "IO" and r.data == b"x" * 478 and not r.eof
+    assert r.closes_file and fsdev.open is None
+    # Without an open file the first READ is refused, nothing read
+    del fsdev.fail["READ"]
+    r = run(session.read_to(10))
+    assert r.status_name == "BAD_STATE" and r.data == b""
 
 
 def test_session_sequence_numbers_increase_and_wrap(session, fsdev):
@@ -273,6 +334,8 @@ def test_describe():
     assert fsp.describe(fsp.Reply(1, 5, 0, struct.pack("<I", 9))) == ["Written, total 9 bytes"]
     assert fsp.describe(fsp.Reply(1, 6, 0)) == ["End of file reached"]
     assert fsp.describe(fsp.Reply(1, 6, 0, b"hi"))[0] == "Read 2 bytes:"
+    assert fsp.describe(fsp.Reply(1, 6, 0, b"hi", eof=True))[0] == "Read 2 bytes, end of file:"
+    assert fsp.describe(fsp.Reply(1, 6, 0, eof=True)) == ["End of file reached"]
     assert fsp.describe(fsp.Reply(1, 10, 0, struct.pack("<I", 9))) == ["File closed, 9 bytes written"]
     assert fsp.describe(fsp.Reply(1, 11, 0)) == ["ABORT: OK"]
     assert fsp.describe(fsp.Reply(1, 8, 1)) == ["DELFILE: NOT_FOUND"]
@@ -298,6 +361,15 @@ def test_run_cli(session, fsdev, tmp_path):
     assert dst.read_bytes() == b"hello world\r\n!"
     run(fsp.run_cli(session, "put", [str(src), "/FW/b.bin"]))
     assert fsdev.files["/FLASH_DISK:/FW/b.bin"] == b"!"
+    # read N, then read to the end of the file, over several READs
+    fsdev.files["/FLASH_DISK:/FW/c.bin"] = bytearray(b"c" * 500)
+    run(fsp.run_cli(session, "openr", ["c.bin"]))
+    run(fsp.run_cli(session, "read", ["250"]))
+    run(fsp.run_cli(session, "read", []))
+    assert "Read 250 bytes:" in out and "Read 250 bytes, end of file:" in out
+    run(fsp.run_cli(session, "close", []))
+    with pytest.raises(fsp.FsError, match="READ: BAD_STATE"):
+        run(fsp.run_cli(session, "read", []))
     assert "Directory active: /FLASH_DISK:/FW" in out and "Written, total 14 bytes" in out
     with pytest.raises(ValueError, match="get REMOTE LOCAL"):
         run(fsp.run_cli(session, "get", ["x"]))
@@ -310,7 +382,8 @@ def test_run_cli(session, fsdev, tmp_path):
 def test_shell_runs_harness_lines(session, fsdev):
     out = []
     session.log = out.append
-    lines = iter(["help", "", "mkdir FW", "bogus", "openw x", "write abc", "close", "ls", "quit", "ls"])
+    lines = iter(["help", "", "mkdir FW", "bogus", "openw x", "write abc", "close", "ls",
+                  "openr x", "read 2", "read", "close", "quit", "ls"])
 
     async def read_line():
         return next(lines)
@@ -319,6 +392,7 @@ def test_shell_runs_harness_lines(session, fsdev):
     assert "  openw <path>" in text and "Unknown command: bogus" in text
     assert "Directory active: /FLASH_DISK:/FW" in text and "File closed, 3 bytes written" in text
     assert "[FILE] /FLASH_DISK:/FW/x (3 bytes)" in text
+    assert "Read 2 bytes:" in text and "Read 1 bytes, end of file:" in text
     assert next(lines) == "ls", "quit ends the shell"
 
 

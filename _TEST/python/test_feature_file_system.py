@@ -105,6 +105,7 @@ class Ctx:
         self.services = {setu_proto.SETUService.NAME: svc}
         self.logs = []
         self.hold = False
+        self.bus = type("Bus", (), {"call": staticmethod(lambda fn, *a: fn(*a))})()
 
     def _new_client(self):
         setu_cli = FakeSETU(self.device)
@@ -134,8 +135,7 @@ def page(fsdev, monkeypatch):
     for name in ("cmd_var", "path_var", "payload_var", "count_var"):
         setattr(f, name, Var())
     f.hex_var = Var(False)
-    f.count_var.set("239")
-    for name in ffs.BUTTONS:
+    for name in ffs.BUTTONS + ("stop_btn",):
         setattr(f, name, Button())
     f.state_pill, f.tile_dir, f.tile_file = Shown(), Shown(), Shown()
     f.list_section, f.read_section = Shown(), Shown()
@@ -176,12 +176,16 @@ def test_write_and_read_back_by_command_line(page, fsdev):
     line(page, "openr a.txt")
     line(page, "read 4")
     assert page.read_data == b"hell" and "68 65 6c 6c" in page.read_text.text and page.read_section.open
+    assert page.read_section.title == "Read data (4 bytes)"
     line(page, "read")
+    assert page.read_data == b"o" and page.read_section.title == "Read data (1 bytes, end of file)"
     line(page, "read")
     assert page.read_text.text == "(end of file)"
+    assert page.open_file == ("/FLASH_DISK:/FW/a.txt", "read"), "a read leaves the file open"
     text = logged(page)
     assert "Directory active: /FLASH_DISK:/FW" in text and "File closed, 5 bytes written" in text
-    assert [c[0] for c in fsdev.commands] == list(range(1, 9)), "sequence numbers carry on"
+    # read 4, then "o" and the end (two READs), then the end again
+    assert [c[0] for c in fsdev.commands] == list(range(1, 10)), "sequence numbers carry on"
 
 
 def test_listing_fills_the_table_and_a_row_fills_the_path(page, fsdev):
@@ -284,19 +288,106 @@ def test_write_file(page, fsdev, tmp_path, monkeypatch):
     assert "empty.bin is empty" in logged(page) and len(errors) == 1
 
 
+def read_args(fsdev) -> list:
+    return [c[2] for c in fsdev.commands if c[1] == fsp.OPS["READ"]]
+
+
 def test_read_button_counts(page, fsdev):
-    fsdev.files["/FLASH_DISK:/r"] = bytearray(range(100))
+    data = bytes(range(256)) * 4
+    fsdev.files["/FLASH_DISK:/r"] = bytearray(data)
     line(page, "openr r")
-    for text in ("x", "-1", "70000"):
+    for text in ("x", "-1", "0"):
         page.count_var.set(text)
         page.read()
-    assert logged(page).count("bytes must be 0") == 3
+    assert logged(page).count("bytes must be a positive number") == 3 and read_args(fsdev) == []
     page.count_var.set("10")
     page.read()
-    assert page.read_data == bytes(range(10))
+    assert page.read_data == data[:10] and read_args(fsdev) == [b"\x0a\x00"]
+    page.count_var.set(" 300 ")
+    page.read()
+    assert page.read_data == data[10:310] and read_args(fsdev)[1:] == [b"\xef\x00", b"\x3d\x00"]
+    # Empty: the rest of the file, as many READs as it takes, and the end
     page.count_var.set("")
     page.read()
-    assert fsdev.commands[-1][2] == b"\x00\x00" and page.read_data == bytes(range(10, 100))
+    assert page.read_data == data[310:] and read_args(fsdev)[3:] == [b""] * 4
+    assert page.read_section.title == "Read data (714 bytes, end of file)"
+    assert not page.busy and not page.stop_btn.enabled
+
+
+def test_read_shows_at_most_64_kib(page, fsdev):
+    fsdev.files["/FLASH_DISK:/big"] = bytearray(ffs.SHOW_MAX + 16)
+    line(page, "openr big")
+    page.read()
+    assert len(page.read_data) == ffs.SHOW_MAX + 16
+    assert page.read_text.text.count("\n") == ffs.SHOW_MAX // 16 - 1
+    assert page.read_section.title == "Read data (65552 bytes, end of file, first 64 KiB shown)"
+
+
+def test_stop_ends_a_read(page, fsdev):
+    fsdev.files["/FLASH_DISK:/r"] = bytearray(1000)
+    line(page, "openr r")
+    page.stop_read()                                    # nothing to stop
+    assert not page._stop_read
+    real = fsdev.handle
+
+    def handle(payload):
+        if payload[1] == fsp.OPS["READ"] and len(read_args(fsdev)) == 1:
+            page.stop_read()                            # during the second READ
+        return real(payload)
+    fsdev.handle = handle
+    page.read()
+    assert len(read_args(fsdev)) == 2, "it ended after the READ in flight"
+    assert len(page.read_data) == 478 and "read stopped after 478 bytes" in logged(page)
+    assert page.open_file is not None and not page.stop_btn.enabled and not page._stop_read
+    page.read()
+    assert len(page.read_data) == 1000 - 478, "the next Read carries on"
+    assert logged(page).count("read stopped") == 1
+
+
+def test_a_failed_read_shows_what_came_before(page, fsdev):
+    fsdev.files["/FLASH_DISK:/r"] = bytearray(b"r" * 600)
+    line(page, "openr r")
+    real = fsdev.handle
+
+    def handle(payload):
+        if payload[1] == fsp.OPS["READ"] and len(read_args(fsdev)) == 1:
+            fsdev.fail["READ"] = 9
+        return real(payload)
+    fsdev.handle = handle
+    page.read()
+    assert page.read_data == b"r" * 239 and page.read_section.title == "Read data (239 bytes, then IO)"
+    assert ("warn", "files: READ: IO") in page.ctx.logs and page.open_file is None
+
+
+def test_stop_button_follows_the_read(page):
+    assert not page.stop_btn.enabled
+    page.ctx.hold = True
+    page.read()
+    assert page.busy and page.stop_btn.enabled and not page.read_btn.enabled
+    page.stop_read()
+    assert not page.stop_btn.enabled, "asked once"
+    page.on_disconnected("gone")
+    assert not page.busy and not page._reading and not page._stop_read and not page.stop_btn.enabled
+    page.ctx.hold = False
+    line(page, "ls")
+    assert not page.stop_btn.enabled, "only a Read can be stopped"
+
+
+def test_read_progress_only_while_reading(page):
+    page._read_progress(1234)
+    assert page.read_section.title is None
+    page._reading = True
+    page._read_progress(1234)
+    assert page.read_section.title == "Read data (reading… 1,234 bytes)"
+
+
+def test_a_cancelled_or_failed_read_ends_it(page):
+    page._reading = True
+    page._cancelled()
+    assert not page._reading
+    page._reading = page._stop_read = True
+    page._failed(RuntimeError("link"))
+    assert not page._reading and not page._stop_read
 
 
 def test_download(page, fsdev, tmp_path, monkeypatch):

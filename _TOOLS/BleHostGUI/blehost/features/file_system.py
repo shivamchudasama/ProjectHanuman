@@ -3,8 +3,10 @@
 The FileSystemPoC's UART test harness, through the GUI: its command lines
 (mkdir, cd, openr, openw, write, read, ls, delfile, deldir, close, abort, help)
 run as typed, and each has a button. A listing fills the table; read data is
-shown as a hex dump. Download… reads a whole file to the PC, Write file… writes
-a PC file into the file open for writing.
+shown as a hex dump. Read (and `read [N]`) reads the open file to its end, or N
+bytes, in as many READs as that takes; Stop ends it after the READ in flight.
+Download… reads a whole file to the PC, Write file… writes a PC file into the
+file open for writing.
 """
 
 import os
@@ -14,10 +16,11 @@ from tkinter import filedialog, messagebox, ttk
 from ..protocols import setu
 from ..protocols import filesystem as fsp
 from ..ui import theme as th
-from ..ui.widgets import Disclosure, Pill, StatTile, card, set_icon, set_var
+from ..ui.widgets import Disclosure, Pill, StatTile, Tooltip, card, set_icon, set_var
 from .base import Feature
 
 ROOT = "/FLASH_DISK:"
+SHOW_MAX = 64 * 1024                      # read data shown as a hex dump (4096 lines)
 
 # Path buttons: (attribute, text, op, icon)
 PATH_BUTTONS = (
@@ -52,6 +55,8 @@ class FileSystemFeature(Feature):
         self.open_file = None             # (path, "read" | "write") while one is open
         self.entries = []
         self.read_data = b""
+        self._reading = False             # a Read (several READs) in progress
+        self._stop_read = False           # Stop asked for it to end
 
     # ---- UI ----------------------------------------------------------------
     def build(self, parent):
@@ -117,10 +122,15 @@ class FileSystemFeature(Feature):
         rrow = ttk.Frame(ops)
         rrow.pack(fill="x", pady=(sp("m"), 0))
         ttk.Label(rrow, text="Bytes").pack(side="left")
-        self.count_var = tk.StringVar(value=str(fsp.READ_MAX))
-        ttk.Entry(rrow, textvariable=self.count_var, width=6).pack(side="left", padx=sp("s"))
+        self.count_var = tk.StringVar()
+        count_entry = ttk.Entry(rrow, textvariable=self.count_var, width=8)
+        count_entry.pack(side="left", padx=sp("s"))
+        Tooltip(count_entry, "Empty: to the end of the file; a number: that many bytes", theme)
         self.read_btn = ttk.Button(rrow, text="Read", command=self.read)
         self.read_btn.pack(side="left")
+        self.stop_btn = ttk.Button(rrow, text="Stop", command=self.stop_read)
+        self.stop_btn.pack(side="left", padx=(sp("s"), 0))
+        set_icon(self.stop_btn, theme, "stop")
         self.ls_btn = ttk.Button(rrow, text="List", command=lambda: self.start("LS"))
         self.ls_btn.pack(side="left", padx=(sp("m"), 0))
         set_icon(self.ls_btn, theme, "refresh")
@@ -171,6 +181,9 @@ class FileSystemFeature(Feature):
             btn = getattr(self, name, None)
             if btn is not None:
                 btn.state(["!disabled"] if ready else ["disabled"])
+        stop_btn = getattr(self, "stop_btn", None)
+        if stop_btn is not None:
+            stop_btn.state(["!disabled"] if self._reading and not self._stop_read else ["disabled"])
         if not self.ctx.link.connected:
             self.state_pill.set("Not connected", "idle")
         elif not self._available:
@@ -192,13 +205,16 @@ class FileSystemFeature(Feature):
             self.tree.insert("", "end", iid=str(i), values=entry_row(e))
         self.list_section.set_title(f"Listing ({len(self.entries)})")
 
-    def _show_read(self, data: bytes, title: str):
+    def _show_read(self, data: bytes, note: str):
+        """Read data as a hex dump (its first SHOW_MAX bytes), titled "Read data (note)"."""
         self.read_data = data
         self.read_text.configure(state="normal")
         self.read_text.delete("1.0", "end")
-        self.read_text.insert("1.0", "\n".join(fsp.hexdump(data)) if data else "(end of file)")
+        self.read_text.insert("1.0", "\n".join(fsp.hexdump(data[:SHOW_MAX])) if data else "(end of file)")
         self.read_text.configure(state="disabled")
-        self.read_section.set_title(title)
+        if len(data) > SHOW_MAX:
+            note += f", first {SHOW_MAX // 1024} KiB shown"
+        self.read_section.set_title(f"Read data ({note})")
         self.read_section.set_open(True)
 
     def _pick_entry(self):
@@ -229,9 +245,13 @@ class FileSystemFeature(Feature):
                 self.entries = list(r.entries)
                 self._show_entries()
             elif r.op == fsp.OPS["READ"]:
-                self._show_read(r.data, f"Read data ({len(r.data)} bytes)")
-        elif r.closes_file:
-            self.open_file = None
+                self._show_read(r.data, f"{len(r.data)} bytes" + (", end of file" if r.eof else ""))
+        else:
+            if r.op == fsp.OPS["READ"] and r.data:
+                # read_to(): what came before the failed READ
+                self._show_read(r.data, f"{len(r.data)} bytes, then {r.status_name}")
+            if r.closes_file:
+                self.open_file = None
 
     # ---- commands ------------------------------------------------------------
     def _session(self) -> fsp.FileSystemSession:
@@ -279,6 +299,9 @@ class FileSystemFeature(Feature):
         if op == "help":
             for h in fsp.HELP:
                 self.ctx.log(f"files: {h}")
+            return
+        if op == "READ":
+            self._read(arg)
             return
         self.start(op, arg)
 
@@ -353,14 +376,52 @@ class FileSystemFeature(Feature):
         self._launch(work(), done)
 
     def read(self):
+        """Read the open file: the Bytes field's count, or to its end when empty."""
+        text = self.count_var.get().strip()
         try:
-            n = int(self.count_var.get() or "0", 10)
+            n = int(text, 10) if text else None
         except ValueError:
-            n = -1
-        if not 0 <= n <= 0xFFFF:
-            self.ctx.log("files: bytes must be 0…65535 (0: as many as fit)", "warn")
+            n = 0
+        if n is not None and n <= 0:
+            self.ctx.log("files: bytes must be a positive number, or empty for the whole file", "warn")
             return
-        self.start("READ", fsp.encode_read(n))
+        self._read(n)
+
+    def _read(self, count):
+        """READs until `count` bytes (None: the end of the file) or Stop."""
+        if self.busy or not self._available:
+            return
+        call = self.ctx.bus.call
+
+        async def work():
+            s = self._session()
+            try:
+                return await s.read_to(count, progress=lambda n: call(self._read_progress, n),
+                                       stop=lambda: self._stop_read)
+            finally:
+                self._seq = s.seq
+
+        def done(r):
+            stopped = self._stop_read and r.ok and not r.eof and (count is None or len(r.data) < count)
+            self._end_read()
+            self.apply_reply(r)
+            if stopped:
+                self.ctx.log(f"files: read stopped after {len(r.data)} bytes", "warn")
+        self._reading, self._stop_read = True, False
+        self._launch(work(), done)
+
+    def _read_progress(self, n: int):
+        if self._reading:
+            self.read_section.set_title(f"Read data (reading… {n:,} bytes)")
+
+    def stop_read(self):
+        """End the Read in progress after the READ in flight."""
+        if self._reading:
+            self._stop_read = True
+            self._update()
+
+    def _end_read(self):
+        self._reading = self._stop_read = False
 
     def download(self):
         """Read the file in the path field to a PC file."""
@@ -386,7 +447,7 @@ class FileSystemFeature(Feature):
             with open(local, "wb") as fh:
                 fh.write(data)
             self.open_file = None
-            self._show_read(data[:4096], f"Read data ({len(data)} bytes downloaded, first 4 KiB)")
+            self._show_read(data[:4096], f"{len(data)} bytes downloaded, first 4 KiB")
             self.ctx.log(f"files: {remote}: {len(data)} bytes saved to {local}")
         self._launch(work(), done)
 
@@ -403,6 +464,7 @@ class FileSystemFeature(Feature):
     def _failed(self, exc):
         self._future = None
         self._running = None
+        self._end_read()
         if isinstance(exc, fsp.FsError) and exc.status is not None:
             if exc.op in (fsp.OPS["WRITE"], fsp.OPS["READ"], fsp.OPS["CLOSE"]) and \
                     exc.status not in (fsp.ST_BAD_ARG, fsp.ST_BAD_STATE, fsp.ST_BUSY):
@@ -413,6 +475,7 @@ class FileSystemFeature(Feature):
     def _cancelled(self):
         self._future = None
         self._running = None
+        self._end_read()
         self.ctx.log("files: cancelled", "warn")
         self._update()
 
