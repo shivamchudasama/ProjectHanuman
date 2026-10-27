@@ -207,6 +207,8 @@ def test_apply_draws_the_flat_theme_in_the_palette(root):
         assert s.lookup("Rail.TFrame", "background") == p["rail"]
         assert s.lookup("Rail.Toolbutton", "background", ["selected"]) == p["sel"]
         assert s.lookup("Caption.TLabel", "foreground") == p["sub"]
+        for style in ("TButton", "Toggle.TButton", "TMenubutton"):
+            assert str(s.lookup(style, "width")) == "0", f"{style}: as wide as its text and icon"
         assert str(root.cget("background")) == p["bg"]
         assert "arrow" not in str(s.layout("Vertical.TScrollbar")), "a thumb in a trough"
 

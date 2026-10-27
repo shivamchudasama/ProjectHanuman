@@ -246,7 +246,7 @@ class Theme:
         flat("Toolbutton", bg, relief="flat", padding=(px(8), px(4)), space=px(6))
         states("Toolbutton", background=[("disabled", bg), ("pressed", p["pressed"]),
                                          ("selected", p["sel"]), ("active", p["hover"])])
-        s.configure("TMenubutton", padding=pad, arrowcolor=fg, arrowsize=px(4))
+        s.configure("TMenubutton", padding=pad, arrowcolor=fg, arrowsize=px(4), width=0)
         flat("TMenubutton", p["btn"], border=p["btn_border"])
         states("TMenubutton", background=[("disabled", bg), ("pressed", p["pressed"]),
                                           ("active", p["hover"])],

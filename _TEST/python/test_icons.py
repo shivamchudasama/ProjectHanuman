@@ -128,6 +128,24 @@ def test_glyph(root):
 
 
 @needs_font
+@pytest.mark.parametrize("size", [16, 20, 24, 30])
+def test_every_glyph_is_whole_and_centred(root, size):
+    """The ink, measured on the rendered pixels, fills its box with even
+    margins: centring on Pillow's textbbox() (a pixel below the ink's top for
+    the icon fonts) cut the top row of Files, ECU, Device, Scan, Connect, …"""
+    for name in icons.GLYPHS:
+        img = pixels(icons.glyph(root, name, size, "#000000"))
+        assert img.size == (size, size), name
+        l, t, r, b = img.getchannel("A").getbbox()
+        assert abs(l - (size - r)) <= 1 and abs(t - (size - b)) <= 1, f"{name} at {size}: not centred"
+        free = icons._glyph_ink(name, size)
+        if free.width <= size and free.height <= size:
+            assert (r - l, b - t) == free.size, f"{name} at {size}: ink cut"
+        else:
+            assert l == 0 or r == size or t == 0 or b == size, f"{name} at {size}: shrunk to fit, no more"
+
+
+@needs_font
 def test_button_spec(root):
     t = th.Theme(mode=th.DARK)
     spec = icons.button_spec(root, t, "save")

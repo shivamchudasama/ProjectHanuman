@@ -113,7 +113,8 @@ class ConnectionPanel(ttk.Frame):
 
         btns = ttk.Frame(conn)
         btns.pack(fill="x", pady=(theme.sp("s"), 0))
-        btns.columnconfigure((0, 1, 2), weight=1, uniform="btn")
+        # As wide as each needs, the rest shared: equal thirds clipped "Disconnect"
+        btns.columnconfigure((0, 1, 2), weight=1)
         self.active_btn = ttk.Button(btns, text="Make active", command=self._make_active)
         self.active_btn.grid(row=0, column=0, sticky="ew")
         self.disconnect_btn = ttk.Button(btns, text="Disconnect", command=self._disconnect)
