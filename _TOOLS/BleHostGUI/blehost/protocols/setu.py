@@ -87,7 +87,10 @@ def register_decoders(reg: DecoderRegistry, base: str):
 
 
 class SETUService:
-    """SETU client endpoint of the current connection, shared by features.
+    """SETU client endpoint of one board's link, shared by features.
+
+    There is one per connected board (core/devices.py); ctx.services["setu"]
+    reaches the active device's.
 
     On connect it subscribes to CTRL. A feature that wants to transfer calls
     new_client() — the frame size is taken from the ATT MTU at that moment —
@@ -99,15 +102,16 @@ class SETUService:
 
     NAME = "setu"
 
-    def __init__(self, ctx):
+    def __init__(self, ctx, link=None):
         self.ctx = ctx
+        self.link = link or ctx.link
         self.available = False
         self.client = None
         self.routes = []                 # (first appType, last appType, client)
         self.base = ctx.settings.base_uuid
         register_decoders(ctx.decoders, self.base)
-        ctx.link.add_connect_hook(self._attach)
-        ctx.link.add_disconnect_hook(self._detach)
+        self.link.add_connect_hook(self._attach)
+        self.link.add_disconnect_hook(self._detach)
 
     async def _attach(self, link):
         self.base = self.ctx.settings.base_uuid
@@ -135,7 +139,7 @@ class SETUService:
             self.client.on_notify(handle, data)
 
     def _require(self):
-        if self.ctx.link.gatt is None:
+        if self.link.gatt is None:
             raise RuntimeError("not connected")
         if not self.available:
             raise RuntimeError("the device has no SETU service")
@@ -143,7 +147,7 @@ class SETUService:
     def new_client(self) -> "setu_client.SETUClient":
         """Must be called on the BLE loop."""
         self._require()
-        self.client = setu_client.SETUClient(self.ctx.link.gatt, self.base,
+        self.client = setu_client.SETUClient(self.link.gatt, self.base,
                                         log=lambda t: self.ctx.log(t, "warn"))
         return self.client
 
@@ -151,12 +155,12 @@ class SETUService:
         """A client that receives the short messages of appTypes first..last,
         replacing an earlier route of the same range. Must be called on the BLE loop."""
         self._require()
-        cli = setu_client.SETUClient(self.ctx.link.gatt, self.base, log=lambda t: self.ctx.log(t, "warn"))
+        cli = setu_client.SETUClient(self.link.gatt, self.base, log=lambda t: self.ctx.log(t, "warn"))
         self.routes = [r for r in self.routes if (r[0], r[1]) != (first, last)] + [(first, last, cli)]
         return cli
 
     async def read_caps(self) -> tuple:
         """-> (protocol version, max frame, window, ATT MTU)"""
         self._require()
-        probe = setu_client.SETUClient(self.ctx.link.gatt, self.base)
-        return (*await probe.read_caps(), self.ctx.link.mtu_size)
+        probe = setu_client.SETUClient(self.link.gatt, self.base)
+        return (*await probe.read_caps(), self.link.mtu_size)

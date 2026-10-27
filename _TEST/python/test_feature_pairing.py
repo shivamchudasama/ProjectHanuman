@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: MIT
 """The Pairing page (_TOOLS/BleHostGUI/blehost/features/pairing.py).
 
-The page's logic (scan for the Pairing service and clear the progress pane,
-choose the roles, check the chosen devices, pair, refuse devices paired with
-each other, cancel, unpair, which buttons are enabled, what the pills and step
+The page's logic (list the boards connected on the Device page and those
+with the Pairing service, choose the roles, check the chosen devices, pair
+over the boards' own links and leave them up, refuse devices paired with each
+other, cancel, unpair, which buttons are enabled, what the pills and step
 lists show) runs against stand-in Tk variables and buttons, a fake AppContext
 whose run() executes the coroutine at once, and the simulated devices of
-test_pairing.py behind fake links (the orchestrator itself is tested there).
-One test builds the real Tk page on conftest's shared Tk root.
+test_pairing.py behind fake links held by DeviceSessions, as the Device page
+connects them (the orchestrator itself is tested there). One test builds the
+real Tk page on conftest's shared Tk root.
 """
 
 import asyncio
@@ -15,11 +17,11 @@ import functools
 
 import pytest
 
-from blehost.core.ble_link import LinkState, ScanResult
 from blehost.core.decoders import DecoderRegistry
+from blehost.core.devices import DeviceSession
 from blehost.features import pairing as fpair
 from blehost.protocols import pairing as pp
-from test_pairing import A, B, FakeLink, SimDevice, World
+from test_pairing import A, B, SimDevice, World
 
 C = ("D0:11:22:33:44:55", 1)
 
@@ -60,10 +62,34 @@ class Future:
             self._on_cancel()
 
 
+class Boards:
+    """The DeviceManager surface the page uses: the connected boards."""
+
+    def __init__(self, world):
+        self.world = world
+        self.sessions = {}
+
+    def connect(self, address):
+        link = self.world.make_link(f"board {address[-5:]}")
+        asyncio.run(link.connect(address))
+        s = DeviceSession(address, f"dev-{address[:2]}", link)
+        self.sessions[s.key] = s
+        return s
+
+    def drop(self, address):
+        self.sessions.pop(address).link.connected = False
+
+    def get(self, address):
+        return self.sessions.get((address or "").upper())
+
+    def connected(self):
+        return [s for s in self.sessions.values() if s.connected]
+
+
 class Ctx:
-    def __init__(self):
+    def __init__(self, world):
         self.bus = Bus()
-        self.link = type("Link", (), {"state": LinkState.IDLE})()
+        self.devices = Boards(world)
         self.decoders = DecoderRegistry()
         self.settings = type("Settings", (), {"scan_timeout": 0.1})()
         self.logs = []
@@ -92,22 +118,6 @@ class Ctx:
             self.pending.pop(0)()
 
 
-class ScanWorld(World):
-    """World whose "scan" link reports the devices, plus one without the service."""
-
-    def make_link(self, label):
-        link = super().make_link(label)
-        if label == "scan":
-            devices = self.devices
-
-            async def scan(timeout):
-                found = [ScanResult(a, f"dev-{a[:2]}", -40 - i, [pp.SERVICE_UUID.upper()])
-                         for i, a in enumerate(devices)]
-                return found + [ScanResult("AA:AA:AA:AA:AA:AA", "other", -30, ["180a"])]
-            link.scan = scan
-        return link
-
-
 @pytest.fixture
 def fast(monkeypatch):
     """The page's orchestrator with test timings."""
@@ -125,11 +135,11 @@ def dialogs(monkeypatch):
 
 def make_page(world):
     """A PairingFeature with stand-in widgets, as build() would leave it."""
-    f = fpair.PairingFeature(Ctx(), make_link=world.make_link)
+    f = fpair.PairingFeature(Ctx(world))
     for name in ("central_var", "peripheral_var", "result_var", "hint_var"):
         setattr(f, name, Var())
     f.role_vars = {"central": Var(), "peripheral": Var()}
-    for name in ("scan_btn", "check_btn", "swap_btn", "pair_btn", "cancel_btn",
+    for name in ("check_btn", "swap_btn", "pair_btn", "cancel_btn",
                  "unpair_c_btn", "unpair_p_btn"):
         setattr(f, name, Button())
     return f
@@ -138,16 +148,23 @@ def make_page(world):
 @pytest.fixture
 def page(fast, dialogs):
     c, p = SimDevice(A[0]), SimDevice(B[0])
-    world = ScanWorld(c, p)
+    world = World(c, p)
     f = make_page(world)
     f.world = world
     return f
 
 
-def scanned(f):
-    f._scan()
-    f.ctx.flush()
+def listed(f):
+    """Connect every simulated board on the 'Device page', as it would."""
+    for addr in f.world.devices:
+        if f.ctx.devices.get(addr) is None:
+            f.ctx.devices.connect(addr)
+    f.on_devices_changed()
     return f
+
+
+def links(f):
+    return [s.link for s in f.ctx.devices.sessions.values()]
 
 
 def logged(f) -> str:
@@ -155,7 +172,7 @@ def logged(f) -> str:
 
 
 def enabled(f):
-    return {n for n in ("scan", "check", "swap", "pair", "cancel", "unpair_c", "unpair_p")
+    return {n for n in ("check", "swap", "pair", "cancel", "unpair_c", "unpair_p")
             if getattr(f, f"{n}_btn").enabled}
 
 
@@ -206,26 +223,39 @@ def test_result_pill():
     assert fpair.result_pill("Checked: central ready") == ("Checked", "info")
 
 
-# ---- scan, check, roles ----------------------------------------------------------------
+# ---- the boards, check, roles ----------------------------------------------------------
 def test_decoders_are_registered(page):
     assert page.ctx.decoders.name(pp.STATUS_UUID) == "PAIR STATUS"
 
 
-def test_scan_keeps_pairing_devices_and_proposes_roles(page):
-    scanned(page)
-    assert set(page._found) == {A[0], B[0]}, "only devices advertising the Pairing service"
+def test_lists_connected_boards_with_the_service_and_proposes_roles(page):
+    page.world.devices[C[0]] = SimDevice(C[0])
+    page.world.devices[C[0]].has_service = False     # not provisioned: no Pairing service
+    listed(page)
+    assert set(page._found) == {A[0], B[0]}, "only boards with the Pairing service"
     assert fpair.choice_address(page.central_var.get()) == A[0]
     assert fpair.choice_address(page.peripheral_var.get()) == B[0]
-    assert "2 device(s) advertise the Pairing service" in logged(page)
-    # A second scan keeps the user's choice
+    # A refresh keeps the user's choice
     page.central_var.set(fpair.choice_text("dev", B[0]))
-    scanned(page)
+    page.on_devices_changed()
     assert fpair.choice_address(page.central_var.get()) == B[0]
+
+
+def test_a_board_that_goes_clears_its_choice(page):
+    listed(page)
+    page._check()
+    page.ctx.flush()
+    assert set(page._checked) == {A[0], B[0]}
+    page.ctx.devices.drop(B[0])
+    page.on_devices_changed()
+    assert page.peripheral_var.get() == "" and set(page._found) == {A[0]}
+    assert set(page._checked) == {A[0]}
+    assert page.hint_var.get() == fpair.CONNECT_HINT and "pair" not in enabled(page)
 
 
 def test_check_reads_the_chosen_devices(page):
     page.world.devices[C[0]] = SimDevice(C[0])
-    scanned(page)
+    listed(page)
     page.world.devices[B[0]].prov_state = 1
     page._check()
     page.ctx.flush()
@@ -238,14 +268,16 @@ def test_check_reads_the_chosen_devices(page):
     assert page.role_vars["peripheral"].get() == "IDLE"
     assert page.result_var.get() == "Checked: central ready; peripheral not provisioned"
     assert fpair.result_pill(page.result_var.get()) == ("Checked", "info")
-    # An unreachable device shows its error, the other its status
-    page._found["AA:BB:CC:DD:EE:FF"] = ScanResult("AA:BB:CC:DD:EE:FF", "gone", -90, [])
-    page.peripheral_var.set(fpair.choice_text("gone", "AA:BB:CC:DD:EE:FF"))
+    # A board whose link went before the list caught up shows its error, the other its status
+    page.ctx.devices.get(C[0]).link.connected = False
+    page.peripheral_var.set(fpair.choice_text("dev-D0", C[0]))
     page._check()
     page.ctx.flush()
-    assert fpair.row_status(page._checked["AA:BB:CC:DD:EE:FF"]).startswith("error:")
+    assert ("peripheral dev-D0: error: dev-D0 is not connected: connect it on the Device page"
+            in logged(page))
     assert page.role_vars["peripheral"].get() == ""
     assert "peripheral error:" in page.result_var.get()
+    assert C[0] not in page._checked and page.peripheral_var.get() == "", "gone from the list"
     # One role chosen: only that one
     page.peripheral_var.set("")
     page._checked.clear()
@@ -255,7 +287,7 @@ def test_check_reads_the_chosen_devices(page):
 
 
 def test_check_shows_devices_paired_with_each_other(page):
-    scanned(page)
+    listed(page)
     a, b = page.world.devices[A[0]], page.world.devices[B[0]]
     a.state, a.peer, a.peer_type, a.role = pp.State.PAIRED, B[0], 1, 1
     b.state, b.peer, b.peer_type, b.role = pp.State.PAIRED, A[0], 1, 2
@@ -267,19 +299,8 @@ def test_check_shows_devices_paired_with_each_other(page):
     assert fpair.result_pill(page.result_var.get()) == ("Paired", "ok")
 
 
-def test_scan_clears_the_progress_pane(page):
-    scanned(page)
-    page._pair()
-    page.ctx.flush()
-    assert page.result_var.get().startswith("Paired")
-    scanned(page)
-    assert page.result_var.get() == ""
-    assert page.role_vars["central"].get() == "" and page.role_vars["peripheral"].get() == ""
-    assert page._outcome is None
-
-
 def test_paired_devices_are_not_paired_again(page, dialogs):
-    scanned(page)
+    listed(page)
     page._pair()
     page.ctx.flush()
     assert "pair" not in enabled(page), "paired with each other: unpair one first"
@@ -303,7 +324,7 @@ def test_paired_devices_are_not_paired_again(page, dialogs):
 
 def test_paired_devices_found_by_another_tool_are_refused(page):
     """The page's statuses may be stale: the orchestrator checks again."""
-    scanned(page)
+    listed(page)
     a, b = page.world.devices[A[0]], page.world.devices[B[0]]
     a.state, a.peer, a.peer_type = pp.State.PAIRED, B[0], 1
     b.state, b.peer, b.peer_type = pp.State.PAIRED, A[0], 1
@@ -316,7 +337,7 @@ def test_paired_devices_found_by_another_tool_are_refused(page):
 
 
 def test_swap(page):
-    scanned(page)
+    listed(page)
     page._swap()
     assert fpair.choice_address(page.central_var.get()) == B[0]
     assert fpair.choice_address(page.peripheral_var.get()) == A[0]
@@ -324,17 +345,11 @@ def test_swap(page):
 
 def test_buttons(page):
     page._update()
-    assert enabled(page) == {"scan", "swap"}, "nothing to check or pair yet"
-    scanned(page)
-    page._update()
-    assert enabled(page) == {"scan", "check", "swap", "pair", "unpair_c", "unpair_p"}
-
-    # The Device page's link must be idle: this page makes its own links
-    page.ctx.link.state = LinkState.CONNECTED
-    page._update()
-    assert enabled(page) == set()
-    assert "Disconnect on the Device page first" in page.hint_var.get()
-    page.ctx.link.state = LinkState.IDLE
+    assert enabled(page) == {"swap"}, "nothing to check or pair yet"
+    assert page.hint_var.get() == fpair.CONNECT_HINT
+    listed(page)
+    assert enabled(page) == {"check", "swap", "pair", "unpair_c", "unpair_p"}
+    assert page.hint_var.get() == ""
 
     # The same device twice
     page.peripheral_var.set(page.central_var.get())
@@ -351,7 +366,7 @@ def test_buttons(page):
 
 # ---- pair, cancel, unpair ----------------------------------------------------------------
 def test_pair(page):
-    scanned(page)
+    listed(page)
     page._pair()
     assert page.result_var.get() == "Running…"
     page.ctx.flush()
@@ -362,11 +377,15 @@ def test_pair(page):
     assert "pairing dev-C4 (central) with dev-E1 (peripheral)" in logged(page)
     assert "paired; the devices keep their encrypted link" in logged(page)
     assert not page.busy
+    # Over the Device page's links, which stay up for the other pages
+    assert len(page.world.links) == 2, "no link of its own"
+    assert all(link.connected and link.disconnects == 0 and link.unsubscribed == 1
+               for link in links(page))
 
 
 def test_pair_shows_both_devices_live(page):
     """Each STATUS notification reaches its role's step list while pairing."""
-    scanned(page)
+    listed(page)
     seen = []
     page.role_vars["central"].set = lambda v: seen.append(v)
     page._pair()
@@ -376,7 +395,7 @@ def test_pair_shows_both_devices_live(page):
 
 
 def test_pair_failure(page):
-    scanned(page)
+    listed(page)
     c, p = page.world.devices[A[0]], page.world.devices[B[0]]
     c.outcome, p.outcome = ("fail", pp.Error.PEER_CERT, 5), "lost"
     c.peer_dev, p.peer_dev = p, c
@@ -389,7 +408,7 @@ def test_pair_failure(page):
 
 
 def test_pair_not_started(page):
-    scanned(page)
+    listed(page)
     page.world.devices[B[0]].prov_state = 2
     page._pair()
     page.ctx.flush()
@@ -401,14 +420,15 @@ def test_pair_not_started(page):
 def test_pair_needs_two_devices(page, dialogs):
     page._pair()
     assert dialogs["errors"] and "two different devices" in dialogs["errors"][0]
-    scanned(page)
+    assert page.world.links == [], "nothing connected by the page"
+    listed(page)
     page.peripheral_var.set(page.central_var.get())
     page._pair()
     assert len(dialogs["errors"]) == 2
 
 
 def test_cancel(page):
-    scanned(page)
+    listed(page)
     page.ctx.hold = True
     page._pair()
     assert page.busy
@@ -419,7 +439,7 @@ def test_cancel(page):
 
 
 def test_unpair(page, dialogs):
-    scanned(page)
+    listed(page)
     dev = page.world.devices[B[0]]
     dev.state, dev.peer, dev.peer_type = pp.State.PAIRED, A[0], 1
     dialogs["ask"] = False
@@ -437,27 +457,30 @@ def test_unpair(page, dialogs):
     assert page.world.devices[A[0]].controls == []
 
 
-def test_link_hooks_refresh_the_buttons(page):
-    scanned(page)
-    page.ctx.link.state = LinkState.CONNECTED
-    page.on_connected({})
-    assert "pair" not in enabled(page)
-    page.ctx.link.state = LinkState.IDLE
-    page.on_disconnected("gone")
+def test_the_active_device_does_not_matter(page):
+    # Any connected board may be paired, whichever one the other pages act on
+    listed(page)
+    page.on_connected({"switched": True})
+    assert "pair" in enabled(page)
+    page.on_disconnected("switched")
     assert "pair" in enabled(page)
 
 
 # ---- the real page --------------------------------------------------------------------------
 def test_build_real_page(tk_root, fast):
-    world = ScanWorld(SimDevice(A[0]), SimDevice(B[0]), SimDevice(C[0]))
-    f = fpair.PairingFeature(Ctx(), make_link=world.make_link)
+    world = World(SimDevice(A[0]), SimDevice(B[0]), SimDevice(C[0]))
+    world.devices[C[0]].has_service = False
+    f = fpair.PairingFeature(Ctx(world))
+    f.world = world
     frame = f.build(tk_root)                        # passive theme (theme.of)
     assert frame.winfo_children()
     assert "disabled" in f.pair_btn.state() and "disabled" in f.check_btn.state()
-    scanned(f)
-    assert len(f.tree.get_children()) == 3
-    assert len(f._combos[0].cget("values")) == 3
-    assert f.found_pill.text == "3 found"
+    assert f.found_pill.text == "None connected"
+    listed(f)
+    assert len(f.tree.get_children()) == 3, "every connected board is listed"
+    assert f.tree.set(C[0], "status") == fpair.NO_SERVICE
+    assert len(f._combos[0].cget("values")) == 2, "only boards with the Pairing service"
+    assert f.found_pill.text == "2 connected"
     assert "disabled" not in f.pair_btn.state()
     f.role_vars["central"].set("CERT_EXCHANGE as central, peer x")
     assert f.role_pills["central"].text == "Cert Exchange"

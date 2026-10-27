@@ -1,7 +1,8 @@
 """Main window: a navigation rail on the left and one page at a time beside it
 (Device, one per feature, Log, BLE traffic). A header names the page and
-shows the link; a status line under it shows the latest log line. Light or
-dark theme (ui/theme.py).
+shows the active device (core/devices.py) and how many other boards are
+connected; a status line under it shows the latest log line. Light or dark
+theme (ui/theme.py).
 
 Pages are built the first time they are shown, and only the current one is
 mapped, so Tk lays out and redraws one page's widgets, not the whole window's.
@@ -14,7 +15,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from ..core.ble_link import LinkState
-from ..core.event_bus import LINK_STATE, LOG
+from ..core.event_bus import DEVICES, LINK_STATE, LOG
 from . import icons
 from . import theme as th
 from .connection_panel import STATE_PILL, ConnectionPanel
@@ -64,6 +65,7 @@ class MainWindow:
         t = self.theme
 
         self.features = [cls(ctx) for cls in feature_classes]
+        ctx.devices.is_busy = self._busy           # no switch of the active device while busy
         self.pages = {"device": Page("device", "Device", "device", self._build_device)}
         for i, f in enumerate(self.features):
             self.pages[f"feature{i}"] = Page(f"feature{i}", f.title, f.icon,
@@ -78,6 +80,7 @@ class MainWindow:
         self._current = None
         self.conn = None
         self.traffic = None
+        self._reason = None                    # why the active device's link went, for the header
 
         self._build_status_bar()
         body = ttk.Frame(root)
@@ -102,6 +105,7 @@ class MainWindow:
         root.bind_all("<Control-L>", lambda e: self._toggle_mode())     # Ctrl+Shift+L
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         ctx.bus.subscribe(LINK_STATE, self._on_link_state)
+        ctx.bus.subscribe(DEVICES, self._on_devices)
         ctx.bus.subscribe(LOG, self._on_log)
         self.theme.on_change(self._on_theme)
 
@@ -168,8 +172,12 @@ class MainWindow:
         open_log.pack(side="right")
 
     def _build_device(self, parent):
-        self.conn = ConnectionPanel(parent, self.ctx, is_busy=lambda: any(f.busy for f in self.features))
+        self.conn = ConnectionPanel(parent, self.ctx, is_busy=self._busy)
         return self.conn
+
+    def _busy(self) -> bool:
+        """A feature has work in progress (any thread: only reads)."""
+        return any(f.busy for f in self.features)
 
     def _build_log(self, parent):
         t = self.theme
@@ -289,28 +297,62 @@ class MainWindow:
         self.last_log.configure(foreground=colour)
 
     def _on_link_state(self, payload):
+        """The active device's link (core/devices.py)."""
         state, info = payload
-        self.conn.show_link(state, info)
-        self.status_pill.set(*STATE_PILL.get(state, (state.value, "idle")))
+        name = info.get("name") or info.get("address")
         if state == LinkState.CONNECTED:
-            set_var(self.status_var, f"{info.get('name') or '?'} [{info.get('address')}]"
-                                     f"  ·  ATT MTU {info.get('mtu')}")
-            self.ctx.log(f"connected to {info.get('name') or info.get('address')}")
+            if info.get("switched"):
+                self.ctx.log(f"active device: {name}")
+            else:
+                self.ctx.log(f"connected to {name}")
             for f in self._built_features():
                 f.on_connected(info)
-            if self.current_page == "device" and self.features:
+            # The first board: on to the first feature; more boards: stay to connect them
+            if (not info.get("switched") and self.current_page == "device" and self.features
+                    and len(self.ctx.devices.connected()) <= 1):
                 self.show_page("feature0")
-        elif state == LinkState.IDLE and "reason" in info:
-            set_var(self.status_var, f"Not connected ({info['reason']})")
-            self.ctx.log(info["reason"], "warn" if info["reason"] == "link lost" else "info")
+        elif state == LinkState.IDLE and "reason" in info:     # logged by _on_devices
             for f in self._built_features():
                 f.on_disconnected(info["reason"])
-        elif state in (LinkState.CONNECTING, LinkState.SCANNING):
-            set_var(self.status_var, f"{state.value}…")
-        elif state == LinkState.IDLE:
-            set_var(self.status_var, "Not connected")
+        self._reason = info.get("reason") if state == LinkState.IDLE else None
+        self._show_header()
+
+    def _on_devices(self, payload):
+        """A board's link changed, or the active device or the scan."""
+        session, state, info = payload
+        if session is not None and state == LinkState.IDLE and "reason" in info:
+            self._reason = info["reason"]              # the header says why the last link went
+            self.ctx.log(f"{session.name or session.address}: {info['reason']}",
+                         "warn" if info["reason"] == "link lost" else "info")
+        if self.conn is not None:
+            self.conn.show_devices(payload)
+        for f in self._built_features():
+            f.on_devices_changed()
+        self._show_header()
+
+    def _show_header(self):
+        """The header's pill and line: the active device, and the others."""
+        reason = self._reason
+        devices = self.ctx.devices
+        active = devices.active
+        others = len([s for s in devices.sessions.values() if s is not active])
+        more = f"  ·  +{others} more" if others else ""
+        if active is not None:
+            st = active.state
+            self.status_pill.set(*STATE_PILL.get(st, (st.value, "idle")))
+            line = f"{active.name or '?'} [{active.address}]"
+            if active.connected:
+                line += f"  ·  ATT MTU {active.link.mtu_size}"
+            set_var(self.status_var, line + more)
+        elif devices.scanning:
+            self.status_pill.set(*STATE_PILL[LinkState.SCANNING])
+            set_var(self.status_var, "Scanning…" + more)
         else:
-            set_var(self.status_var, state.value)
+            self.status_pill.set(*STATE_PILL[LinkState.IDLE])
+            text = "No active device" if others else "Not connected"
+            if reason and reason != "switched":
+                text += f" ({reason})"
+            set_var(self.status_var, text + more)
 
     def _on_close(self):
         if any(f.busy for f in self.features) and not messagebox.askyesno(
@@ -322,7 +364,7 @@ class MainWindow:
             except Exception:
                 pass
         try:
-            self.ctx.runner.submit(self.ctx.link.disconnect()).result(timeout=3)
+            self.ctx.runner.submit(self.ctx.devices.disconnect_all()).result(timeout=3)
         except Exception:
             pass
         self.ctx.runner.stop()

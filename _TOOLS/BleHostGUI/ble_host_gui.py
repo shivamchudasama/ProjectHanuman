@@ -10,6 +10,7 @@ See README.md for the layout and how to add a feature.
 import tkinter as tk
 
 from blehost.context import AppContext
+from blehost.core.devices import ActiveService
 from blehost.core.gatt_server import PcGattServer
 from blehost.features.ecu import EcuFeature
 from blehost.features.file_system import FileSystemFeature
@@ -38,11 +39,18 @@ def _dpi_aware():
 def main():
     _dpi_aware()
     ctx = AppContext()
-    ctx.services[SETUService.NAME] = SETUService(ctx)
-    # The PC's own SETU service: the device sends to the PC through it (CSR, CHALLENGE)
+    # A SETU service per connected board; the pages reach the active device's
+    ctx.devices.add_session_hook(
+        lambda s: s.services.__setitem__(SETUService.NAME, SETUService(ctx, s.link)))
+    ctx.services[SETUService.NAME] = ActiveService(ctx.devices, SETUService.NAME)
+    # The PC's own SETU service: the device sends to the PC through it (CSR, CHALLENGE).
+    # Every connected board sees it; it takes the active device's writes only.
     pc = PcGattServer(ctx.settings.base_uuid, log=lambda t: ctx.log(t, "warn"), tap=ctx.tap)
     ctx.services[PcGattServer.NAME] = pc
-    ctx.link.add_disconnect_hook(lambda _link, _reason: pc.link_lost())
+    ctx.devices.add_session_hook(lambda s: s.link.add_disconnect_hook(
+        lambda _link, _reason, addr=s.address: pc.link_lost(addr)))
+    # On the BLE loop, where the PC service's receiver runs
+    ctx.devices.add_active_hook(lambda s: ctx.runner.call_soon(pc.set_peer, s.address if s else None))
 
     root = tk.Tk()
     root.withdraw()              # shown once built and themed: no white flash, no layout jump

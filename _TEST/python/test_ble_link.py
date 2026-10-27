@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 """BleLink (_TOOLS/BleHostGUI/blehost/core/ble_link.py) with a fake `bleak`:
-the main link drives the window (LINK_STATE), a feature's own links
-(primary=False, as the Pairing page makes) do not, and their traffic is tagged
-with their label."""
+a primary link posts LINK_STATE, a board's link (primary=False, as
+core/devices.py makes) does not and reports through on_state instead, and its
+traffic is tagged with its label."""
 
 import asyncio
 import sys
@@ -162,3 +162,36 @@ def test_forgetting_failure_is_logged(bleak, monkeypatch):
     asyncio.run(go())
     assert any(isinstance(p, tuple) and p[0] == "warn" and "could not forget the keys for AA:BB" in p[1]
                for t, p in bus.posts)
+
+
+def test_on_state_reports_every_change(bleak):
+    # core/devices.py follows each board's link through it
+    seen = []
+    link = BleLink(Bus(), TrafficTap(Bus()), label="dev A3:CF", primary=False,
+                   on_state=lambda lk, st, info: seen.append((lk, st, info)))
+    _session(link)
+    assert [s for _, s, _ in seen] == [LinkState.CONNECTING, LinkState.CONNECTED,
+                                       LinkState.DISCONNECTING, LinkState.IDLE]
+    assert all(lk is link for lk, _, _ in seen)
+    assert seen[1][2] == {"address": "AA:BB", "name": "dev", "mtu": 247}
+    assert seen[-1][2] == {"reason": "disconnected"}
+
+
+def test_connect_with_another_links_scanned_device(bleak):
+    # The scan link finds the board, the board's own link connects to that BLEDevice
+    dev = types.SimpleNamespace(name="ProjectHanuman")
+    adv = types.SimpleNamespace(local_name="ProjectHanuman", rssi=-50, service_uuids=[],
+                                manufacturer_data={})
+
+    async def discover(timeout, return_adv):
+        return {"AA:BB": (dev, adv)}
+    bleak.BleakScanner = types.SimpleNamespace(discover=discover)
+    scanner = BleLink(Bus(), TrafficTap(Bus()), primary=False)
+    link = BleLink(Bus(), TrafficTap(Bus()), primary=False)
+
+    async def go():
+        await scanner.scan(0.1)
+        assert scanner.device("AA:BB") is dev and scanner.device("CC:DD") is None
+        await link.connect("AA:BB", "dev", device=scanner.device("AA:BB"))
+        return link._client.target
+    assert asyncio.run(go()) is dev

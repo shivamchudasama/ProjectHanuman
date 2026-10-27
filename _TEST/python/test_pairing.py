@@ -162,6 +162,7 @@ class SimDevice:
         self.peer_dev = None
         self.refuse_write = None
         self.task = None
+        self.has_service = True             # False: a board without the Pairing service
 
     def status_bytes(self):
         own = pp.addr_wire(self.address, self.addr_type)
@@ -216,6 +217,9 @@ class FakeGatt:
     def __init__(self, link):
         self.link = link
 
+    def has_characteristic(self, uuid):
+        return self.link.dev.has_service and uuid in (pp.STATUS_UUID, pp.CONTROL_UUID)
+
     async def read_gatt_char(self, uuid):
         assert uuid == pp.STATUS_UUID
         self.link.reads += 1
@@ -235,6 +239,8 @@ class FakeLink:
         self.gatt = None
         self.connected = False
         self.reads = 0
+        self.disconnects = 0
+        self.unsubscribed = 0
 
     async def connect(self, address, name=""):
         if address not in self.devices:
@@ -246,12 +252,19 @@ class FakeLink:
 
     async def disconnect(self):
         self.connected = False
+        self.disconnects += 1
         if self.dev:
             self.dev.notify_cb = None
 
     async def start_notify(self, uuid, cb):
         assert uuid == pp.STATUS_UUID
+        assert self.dev.notify_cb is None, "subscribed twice"
         self.dev.notify_cb = cb
+
+    async def stop_notify(self, uuid):
+        assert uuid == pp.STATUS_UUID
+        self.unsubscribed += 1
+        self.dev.notify_cb = None
 
 
 class World:
@@ -438,6 +451,71 @@ def test_probe_and_unpair():
     assert st.state == pp.State.IDLE and st.peer == ""
     assert "dev: UNPAIR sent" in world.logs
     assert not any(link.connected for link in world.links)
+
+
+# ---- links lent by the GUI's Device page (existing=) ------------------------------
+def _lent(world):
+    """Connect a link to each device, as the Device page would; -> address -> link."""
+    links = {}
+    for addr in world.devices:
+        link = world.make_link(f"board {addr[-5:]}")
+        asyncio.run(link.connect(addr))
+        links[addr] = link
+    world.opened.clear()
+    return links
+
+
+def _lent_orchestrator(world, links, **kw):
+    kw.setdefault("timeout", 2.0)
+    kw.setdefault("fail_grace", 0.2)
+    kw.setdefault("poll", 0.05)
+    kw.setdefault("start_settle", 0.0)
+    return pp.PairingOrchestrator(existing=lambda a: links.get(a.upper()), log=world.logs.append,
+                                  on_status=lambda label, st: world.statuses.append((label, st.state)),
+                                  **kw)
+
+
+def test_pair_on_lent_links():
+    c, p = SimDevice(A[0]), SimDevice(B[0])
+    world = World(c, p)
+    links = _lent(world)
+    orch = _lent_orchestrator(world, links)
+    out = asyncio.run(orch.pair((A[0], "dev-c"), (B[0], "dev-p")))
+    assert out.ok
+    assert world.opened == [], "no connect of its own"
+    assert all(link.connected and link.disconnects == 0 for link in links.values()), "kept up"
+    assert all(link.unsubscribed == 1 for link in links.values()), "STATUS unsubscribed"
+    assert "peripheral: using the link to dev-p" in world.logs
+    # Again on the same links: a second subscription would have failed
+    asyncio.run(orch.unpair(A[0]))
+    assert asyncio.run(orch.pair((A[0], ""), (B[0], ""))).ok
+
+
+def test_probe_and_unpair_on_a_lent_link():
+    dev = SimDevice(A[0], state=pp.State.PAIRED)
+    dev.peer, dev.peer_type, dev.role = B[0], 1, 2
+    world = World(dev)
+    links = _lent(world)
+    orch = _lent_orchestrator(world, links)
+    assert asyncio.run(orch.probe(A[0], "dev")).paired
+    assert asyncio.run(orch.unpair(A[0], "dev")).state == pp.State.IDLE
+    link = links[A[0]]
+    assert link.connected and link.disconnects == 0 and link.unsubscribed == 2
+
+
+def test_a_device_without_a_link_is_refused():
+    world = World(SimDevice(A[0]), SimDevice(B[0]))
+    links = _lent(world)
+    del links[B[0]]
+    orch = _lent_orchestrator(world, links)
+    with pytest.raises(pp.PairingError, match="dev-p is not connected"):
+        asyncio.run(orch.pair((A[0], "dev-c"), (B[0], "dev-p")))
+    # A lent link that dropped before the run
+    links = _lent(World(SimDevice(A[0]), SimDevice(B[0])))
+    links[B[0]].connected = False
+    with pytest.raises(pp.PairingError, match="the peripheral device is not connected"):
+        asyncio.run(_lent_orchestrator(world, links).pair((A[0], ""), (B[0], "")))
+    assert links[A[0]].connected, "the other board's link is left alone"
 
 
 # ---- CONTROL is the trusted host's (host authentication) --------------------------

@@ -16,6 +16,7 @@ import setu_client
 from blehost.core import gatt_server as gs
 
 BASE = "16a1-4812-af35-f3f29a92f6ca"
+DEV_A, DEV_B = "C6:C0:BE:27:A3:CF", "D0:11:22:33:44:55"
 
 
 class FakeBackend:
@@ -24,6 +25,7 @@ class FakeBackend:
         self.fail = fail
         self.started = False
         self.notified = []
+        self.peers = []                     # the peer each notification was for
         self.client = None                  # a SETUClient on the device side
 
     async def start(self):
@@ -34,8 +36,9 @@ class FakeBackend:
     async def stop(self):
         self.started = False
 
-    def notify(self, frame):
+    def notify(self, frame, peer=None):
         self.notified.append(bytes(frame))
+        self.peers.append(peer)
         if self.client is not None:
             self.client.on_notify(0, bytearray(frame))
 
@@ -54,13 +57,14 @@ class Tap:
 class DeviceLink:
     """The device's SETU Client writes into the PC's DATA."""
 
-    def __init__(self, server):
+    def __init__(self, server, sender=""):
         self.server = server
+        self.sender = sender                # the board's address, as WinRT reports it
         self.mtu_size = 247
 
     async def write_gatt_char(self, uuid, data, response=False):
         assert uuid == setu_client.char_uuid(1, BASE)
-        self.server._on_write(bytes(data))
+        self.server._on_write(bytes(data), self.sender)
         await asyncio.sleep(0)
 
 
@@ -136,6 +140,73 @@ def test_link_lost_fails_the_transfer():
         return srv, await srv.receiver.receive(timeout=1.0)
     srv, r = run(go())
     assert r.status == "DISCONNECTED" and not srv.receiver.subscribed and srv.subscribers == 0
+
+
+# ---- several boards: only the active device's writes ---------------------------
+START_23 = setu_client.frame(setu_client.T_START, bytes([1, 0x23, 0, 1, 0, 0, 240, 16, 0, 0, 0, 0]))
+
+
+def test_only_the_active_device_is_heard():
+    logs = []
+
+    async def go():
+        srv, b = make()
+        srv.log = logs.append
+        await srv.start()
+        srv.set_peer(DEV_A.lower())
+        srv._on_subscribed([DEV_B])
+        no_peer_sub = srv.receiver.subscribed
+        srv._on_subscribed([DEV_A, DEV_B])
+        counted = srv.subscribers
+        for _ in range(2):
+            srv._on_write(START_23, DEV_B)          # another board's writes: dropped, logged once
+        dropped = list(b[0].notified)
+        dev = setu_client.SETUClient(DeviceLink(srv, DEV_A), BASE, log=lambda *_: None)
+        b[0].client = dev
+        status = await dev.send(0x23, b"csr")
+        return no_peer_sub, counted, dropped, status, await srv.receiver.receive(0x23, timeout=1.0), b[0]
+    no_peer_sub, counted, dropped, status, r, backend = run(go())
+    assert not no_peer_sub and counted == 1
+    assert dropped == [] and len([t for t in logs if DEV_B in t and "ignored" in t]) == 1
+    assert status == "OK" and r.data == b"csr"
+    assert set(backend.peers) == {DEV_A}, "notified to the active device only"
+
+
+def test_switching_or_losing_the_active_device_ends_its_transfer():
+    async def go():
+        srv, _ = make()
+        await srv.start()
+        srv.set_peer(DEV_A)
+        srv._on_subscribed([DEV_A, DEV_B])
+        srv._on_write(START_23, DEV_A)
+        srv.link_lost(DEV_B)                         # another board left: A's transfer goes on
+        running = srv.receiver.active
+        subs_after_b = srv.subscribers
+        srv.set_peer(DEV_B)                          # switch: A's transfer ends
+        r = await srv.receiver.receive(timeout=1.0)
+        b_subscribed = srv.receiver.subscribed
+        srv._on_subscribed([DEV_A, DEV_B])           # B subscribes again, then sends
+        srv._on_write(START_23, DEV_B)
+        srv.link_lost(DEV_B)
+        r2 = await srv.receiver.receive(timeout=1.0)
+        return running, subs_after_b, r, b_subscribed, r2, srv
+    running, subs_after_b, r, b_subscribed, r2, srv = run(go())
+    assert running and subs_after_b == 1
+    assert r.status == "DISCONNECTED"
+    assert not b_subscribed, "B's subscription went with its link"
+    assert r2.status == "DISCONNECTED" and srv.subscribers == 0
+
+
+def test_without_a_peer_every_board_is_heard():
+    async def go():
+        srv, b = make()
+        await srv.start()
+        srv._on_subscribed([DEV_B])
+        sub = srv.receiver.subscribed
+        srv._on_write(START_23, DEV_B)
+        return sub, b[0].notified, b[0].peers
+    sub, notified, peers = run(go())
+    assert sub and notified[0][1] == setu_client.T_ACK and peers == [None]
 
 
 def test_caps_value_matches_the_device():
@@ -217,6 +288,7 @@ class _Characteristic:
         self.write_handlers, self.sub_handlers = {}, {}
         self.subscribed_clients = []
         self.notified = []
+        self.notified_to = []
         self.removed = []
 
     def add_write_requested(self, handler):
@@ -244,6 +316,13 @@ class _Characteristic:
         async def op():
             if fail:
                 raise OSError("no client")
+        return op()
+
+    def notify_value_for_subscribed_client_async(self, buf, client):
+        self.notified_to.append((buf.data, client))
+
+        async def op():
+            pass
         return op()
 
 
@@ -298,10 +377,18 @@ class _Request:
         self.responded = True
 
 
+def _session(address):
+    """A GattSession whose device ID names the board at address."""
+    return types.SimpleNamespace(device_id=types.SimpleNamespace(
+        id=f"BluetoothLE#BluetoothLE00:1a:7d:da:71:13-{address.lower()}"))
+
+
 class _WriteArgs:
-    def __init__(self, request):
+    def __init__(self, request, sender=None):
         self.request = request
         self.done = False
+        if sender:
+            self.session = _session(sender)
 
     def get_deferral(self):
         return types.SimpleNamespace(complete=lambda: setattr(self, "done", True))
@@ -349,9 +436,14 @@ def winrt(monkeypatch):
     return world
 
 
-def _backend(loop, writes=None, subs=None, logs=None):
-    return gs.WinRtBackend(BASE, loop,
-                           (writes if writes is not None else []).append,
+def _backend(loop, writes=None, subs=None, logs=None, senders=None):
+    writes = writes if writes is not None else []
+    senders = senders if senders is not None else []
+
+    def on_write(data, sender):
+        writes.append(data)
+        senders.append(sender)
+    return gs.WinRtBackend(BASE, loop, on_write,
                            (subs if subs is not None else []).append,
                            (logs if logs is not None else []).append)
 
@@ -440,14 +532,56 @@ def test_winrt_backend_reports_subscriptions(winrt):
         await b.start()
         ctrl = winrt.provider.service.characteristics[1]
         handler = next(iter(ctrl.sub_handlers.values()))
-        ctrl.subscribed_clients = ["device"]
+        ctrl.subscribed_clients = ["device"]                 # WinRT does not say which
+        handler(ctrl, None)
+        ctrl.subscribed_clients = [types.SimpleNamespace(session=_session(DEV_A)),
+                                   types.SimpleNamespace(session=_session(DEV_B))]
         handler(ctrl, None)
         ctrl.subscribed_clients = []
         handler(ctrl, None)
         await _settle()
         await b.stop()
     run(go())
-    assert subs == [1, 0]
+    assert subs == [[""], [DEV_A, DEV_B], []]
+
+
+def test_winrt_backend_reports_who_wrote(winrt):
+    writes, senders = [], []
+
+    async def go():
+        b = _backend(asyncio.get_running_loop(), writes=writes, senders=senders)
+        await b.start()
+        data = winrt.provider.service.characteristics[0]
+        handler = next(iter(data.write_handlers.values()))
+        handler(data, _WriteArgs(_Request(b"\x01", _WriteOption.WRITE_WITHOUT_RESPONSE), DEV_A))
+        handler(data, _WriteArgs(_Request(b"\x02", _WriteOption.WRITE_WITHOUT_RESPONSE)))
+        await _settle()
+        await b.stop()
+    run(go())
+    assert writes == [b"\x01", b"\x02"] and senders == [DEV_A, ""]
+
+
+def test_winrt_backend_notifies_the_peer_only(winrt):
+    async def go():
+        b = _backend(asyncio.get_running_loop())
+        await b.start()
+        ctrl = winrt.provider.service.characteristics[1]
+        a = types.SimpleNamespace(session=_session(DEV_A))
+        ctrl.subscribed_clients = [types.SimpleNamespace(session=_session(DEV_B)), a]
+        b.notify(b"\x02\x10", DEV_A)
+        b.notify(b"\x02\x11", "11:22:33:44:55:66")        # not subscribed: to everyone
+        b.notify(b"\x02\x12")
+        await _settle()
+        await b.stop()
+        return ctrl.notified_to, ctrl.notified, a
+    to, everyone, a = run(go())
+    assert to == [(b"\x02\x10", a)] and everyone == [b"\x02\x11", b"\x02\x12"]
+
+
+def test_session_address():
+    assert gs.session_address(_session(DEV_A)) == DEV_A
+    assert gs.session_address(None) == ""
+    assert gs.session_address(types.SimpleNamespace(device_id=types.SimpleNamespace(id="x"))) == ""
 
 
 def test_winrt_backend_notifies_on_ctrl(winrt):

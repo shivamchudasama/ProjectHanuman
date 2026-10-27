@@ -3,8 +3,8 @@
 from dataclasses import dataclass
 
 from .core.async_runner import AsyncRunner
-from .core.ble_link import BleLink
 from .core.decoders import DecoderRegistry
+from .core.devices import DeviceManager
 from .core.event_bus import LOG, EventBus
 from .core.traffic import TrafficTap
 
@@ -25,8 +25,13 @@ class AppContext:
         self.runner = AsyncRunner()
         self.tap = TrafficTap(self.bus)
         self.decoders = DecoderRegistry()
-        self.link = BleLink(self.bus, self.tap)
-        self.services = {}              # name -> link-level service (e.g. "setu")
+        self.devices = DeviceManager(self.bus, self.tap)
+        self.services = {}              # name -> service of the active device (e.g. "setu"), or the PC's
+
+    @property
+    def link(self):
+        """The active device's link (core/devices.py); an idle link without one."""
+        return self.devices.link
 
     def log(self, text: str, level: str = "info"):
         """Append to the application log. Any thread."""

@@ -8,7 +8,8 @@ import queue
 from collections import defaultdict
 
 # Topics. Payload types are noted next to each.
-LINK_STATE = "link.state"      # (LinkState, dict info)
+LINK_STATE = "link.state"      # (LinkState, dict info) of the active device
+DEVICES = "devices"            # (DeviceSession or None, LinkState or None, dict info)
 LOG = "log"                    # (level: "info"|"warn"|"error", text)
 TRAFFIC = "traffic"            # TrafficEvent
 
