@@ -9,7 +9,9 @@ here the same commands travel as SETU short messages on the host link:
 
 FileSystemSession runs them one at a time on a SETUClient (anything with
 send_short and short_q). parse_line() reads the UART harness's command lines,
-for the GUI's Files page and `setu_client.py fs shell`.
+for the GUI's Files page and `setu_client.py fs shell`. A READ carries at most
+READ_MAX bytes; read_to() (and `read [N]` on a command line) sends as many as it
+takes to read N bytes or to the end of the file.
 """
 
 import asyncio
@@ -78,6 +80,8 @@ class Reply:
     status: int
     data: bytes = b""
     entries: list = field(default_factory=list)
+    eof: bool = False                     # read_to(): reading stopped at the end of the file
+    written: int = 0                      # write_to(): bytes of this write the device took
 
     @property
     def ok(self) -> bool:
@@ -146,6 +150,9 @@ def decode_entry(payload: bytes) -> tuple:
 def parse_line(line: str) -> tuple:
     """A UART harness command line -> (op, arg bytes), or ("help", b"").
 
+    `read` is the exception: ("READ", count), count None (to the end of the
+    file) or the positive number of bytes to read in all, for
+    FileSystemSession.read_to(), which sends as many READs as that takes.
     Raises ValueError like the harness's own errors (unknown command, missing
     path or payload, bad read count).
     """
@@ -161,14 +168,14 @@ def parse_line(line: str) -> tuple:
     op, operand = HARNESS[name]
     if name == "read":
         if not rest:
-            return op, b""
+            return op, None
         try:
             n = int(rest, 10)
         except ValueError:
             n = 0
         if n <= 0:
             raise ValueError("read expects optional positive byte count")
-        return op, encode_read(min(n, 0xFFFF))
+        return op, n
     if operand.startswith("<"):
         if not rest:
             raise ValueError(f"{name} requires a {'payload' if name == 'write' else 'path'}")
@@ -296,9 +303,54 @@ class FileSystemSession:
             total = (await self.run("WRITE", data[i:i + ARG_MAX])).total
         return total
 
+    async def write_to(self, data: bytes, progress=None, stop=None) -> Reply:
+        """Write `data` to the open file, ARG_MAX bytes per WRITE. Ends early at a
+        failed WRITE (its status) or when stop() is true (checked between WRITEs).
+        Returns the last WRITE's Reply, its `written` the bytes the device took;
+        progress(bytes so far) follows each WRITE that succeeded."""
+        if not data:
+            raise ValueError("nothing to write")
+        written = 0
+        while True:
+            r = await self.command("WRITE", data[written:written + ARG_MAX])
+            if not r.ok:
+                break
+            written = min(written + ARG_MAX, len(data))
+            if progress:
+                progress(written)
+            if written >= len(data) or (stop and stop()):
+                break
+        r.written = written
+        return r
+
     async def read(self, count: int = None) -> bytes:
         """Up to READ_MAX bytes; b"" at the end of the file."""
         return (await self.run("READ", encode_read(count))).data
+
+    async def read_to(self, count: int = None, progress=None, stop=None) -> Reply:
+        """Read the open file from its position: `count` bytes, or to its end (None),
+        READ_MAX bytes per READ. Ends early at the end of the file (eof), at a failed
+        READ (its status, with the data read before it) or when stop() is true
+        (checked between READs). Returns the last READ's Reply, its data everything
+        read; progress(bytes so far) follows each READ that brought data."""
+        if count is not None and count <= 0:
+            raise ValueError("read count must be positive")
+        data = bytearray()
+        while True:
+            left = None if count is None else count - len(data)
+            r = await self.command("READ", encode_read(None if left is None else min(left, READ_MAX)))
+            if not r.ok:
+                break
+            if not r.data:
+                r.eof = True
+                break
+            data += r.data
+            if progress:
+                progress(len(data))
+            if (count is not None and len(data) >= count) or (stop and stop()):
+                break
+        r.data = bytes(data)
+        return r
 
     async def ls(self) -> list:
         return (await self.run("LS")).entries
@@ -319,20 +371,15 @@ class FileSystemSession:
     async def get(self, path: str, progress=None) -> bytes:
         """Read a whole file (openr, read to the end, close)."""
         await self.openr(path)
-        data = bytearray()
         try:
-            while True:
-                chunk = await self.read()
-                if not chunk:
-                    break
-                data += chunk
-                if progress:
-                    progress(len(data))
+            r = await self.read_to(progress=progress)
+            if not r.ok:
+                raise FsError(f"{r.op_name}: {r.status_name}", r.status, r.op)
         except BaseException:
             await self._abort_quietly()
             raise
         await self.close()
-        return bytes(data)
+        return r.data
 
     async def put(self, path: str, data: bytes) -> int:
         """Write a whole file (openw, write, close). The device does not truncate:
@@ -364,7 +411,9 @@ def describe(r: Reply) -> list:
     if r.op == OPS["WRITE"]:
         return [f"Written, total {r.total} bytes"]
     if r.op == OPS["READ"]:
-        return ["End of file reached"] if not r.data else [f"Read {len(r.data)} bytes:"] + hexdump(r.data)
+        if not r.data:
+            return ["End of file reached"]
+        return [f"Read {len(r.data)} bytes{', end of file' if r.eof else ''}:"] + hexdump(r.data)
     if r.op == OPS["LS"]:
         lines = [f"{'[DIR] ' if e.is_dir else '[FILE]'} {e.path}" + ("" if e.is_dir else f" ({e.size} bytes)")
                  for e in r.entries]
@@ -404,7 +453,13 @@ async def run_cli(session: FileSystemSession, sub: str, rest: list, hex_data=Non
         log(f"Written, total {await session.write(data)} bytes")
         return
     op, arg = parse_line(" ".join([sub] + list(rest)))
-    for line in describe(await session.run(op, arg)):
+    if op == "READ":
+        r = await session.read_to(arg)
+        if not r.ok:
+            raise FsError(f"{r.op_name}: {r.status_name}", r.status, r.op)
+    else:
+        r = await session.run(op, arg)
+    for line in describe(r):
         log(line)
 
 
@@ -435,5 +490,6 @@ async def shell(session: FileSystemSession, read_line=None):
             for h in HELP:
                 log(h)
             continue
-        for out in describe(await session.command(op, arg)):
+        r = await (session.read_to(arg) if op == "READ" else session.command(op, arg))
+        for out in describe(r):
             log(out)

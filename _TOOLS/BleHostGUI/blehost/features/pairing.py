@@ -1,21 +1,20 @@
 """Pairing: orchestrate certificate-based OOB pairing of two provisioned devices
 (_DOC/Pairing/PROTOCOL.md).
 
-The page finds devices that advertise the Pairing service (provisioned ones),
-lets the user choose which device is the central and which the peripheral,
-checks the two chosen devices' STATUS (Check), and runs the pairing: START to
-both, then both STATUS followed live in a step list per device until both are
-PAIRED or one FAILED. Two devices already paired with each other are not paired
-again: UNPAIR one of them first (it deletes that device's bond). A new scan
-clears the progress pane. The page uses links of its own (BleLink with
-primary=False), one per device, so the Device page's link must be idle.
+The boards are connected on the Device page (ctx.devices); this page lists
+them, and those with the Pairing service (provisioned ones) can be chosen as
+the central and the peripheral. It checks the two chosen devices' STATUS
+(Check) and runs the pairing over their links: START to both, then both
+STATUS followed live in a step list per device until both are PAIRED or one
+FAILED. Two devices already paired with each other are not paired again:
+UNPAIR one of them first (it deletes that device's bond). The links stay up
+afterwards, so the boards can be used on the other pages at once.
 """
 
 import re
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from ..core.ble_link import BleLink, LinkState
 from ..protocols import pairing
 from ..ui import theme as th
 from ..ui.widgets import MoreMenu, Pill, Stepper, card, set_icon, set_var
@@ -40,6 +39,11 @@ def choice_address(text: str) -> str:
 
 def choice_name(text: str) -> str:
     return re.sub(r"\s*\[[0-9A-Fa-f:]{17}\]$", "", text or "")
+
+
+NO_SERVICE = "no Pairing service (not provisioned?)"
+CONNECT_HINT = ("Connect both boards on the Device page: provisioned boards that trust this "
+                "PC (Host Access).")
 
 
 def row_status(result) -> str:
@@ -113,14 +117,12 @@ class PairingFeature(Feature):
     title = "Pairing"
     icon = "pair"
 
-    def __init__(self, ctx, make_link=None):
+    def __init__(self, ctx):
         super().__init__(ctx)
-        self._make_link = make_link or (lambda label: BleLink(ctx.bus, ctx.tap, label=label,
-                                                              primary=False))
-        self._found = {}                 # address -> ScanResult (Pairing service seen)
+        self._found = {}                 # address -> DeviceSession with the Pairing service
         self._checked = {}               # address -> PairStatus or exception
         self._future = None
-        self._task = ""                  # "scan" | "check" | "pair" | "unpair" while busy
+        self._task = ""                  # "check" | "pair" | "unpair" while busy
         self._outcome = None
         pairing.register_decoders(ctx.decoders)
 
@@ -132,26 +134,23 @@ class PairingFeature(Feature):
         f.columnconfigure((0, 1), weight=1, uniform="col")
         f.rowconfigure(0, weight=1)
 
-        # Devices: scan for the Pairing service, check each, choose the roles
+        # Devices: the boards connected on the Device page, check each, choose the roles
         dev, head = card(f, "Devices")
         dev.grid(row=0, column=0, sticky="nsew", padx=(0, sp("s")))
-        self.found_pill = Pill(head, theme, "Not scanned", "idle")
+        self.found_pill = Pill(head, theme, "None connected", "warn")
         self.found_pill.grid(row=0, column=2, sticky="e")
         top = ttk.Frame(dev)
         top.pack(fill="x")
-        self.scan_btn = ttk.Button(top, text="Scan", command=self._scan)
-        self.scan_btn.pack(side="left")
         self.check_btn = ttk.Button(top, text="Check", command=self._check)
-        self.check_btn.pack(side="left", padx=(sp("s"), 0))
-        set_icon(self.scan_btn, theme, "search")
+        self.check_btn.pack(side="left")
         set_icon(self.check_btn, theme, "refresh")
 
         body = ttk.Frame(dev)
         body.pack(fill="both", expand=True, pady=(sp("s"), 0))
-        cols = ("name", "address", "rssi", "status")
+        cols = ("name", "address", "status")
         self.tree = ttk.Treeview(body, columns=cols, show="headings", height=6, selectmode="browse")
         for c, text, w in (("name", "Name", 120), ("address", "Address", 130),
-                           ("rssi", "RSSI", 46), ("status", "Status", 150)):
+                           ("status", "Status", 170)):
             self.tree.heading(c, text=text, anchor="w")
             self.tree.column(c, width=theme.px(w), minwidth=theme.px(36), anchor="w",
                              stretch=(c == "status"))
@@ -159,9 +158,9 @@ class PairingFeature(Feature):
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
-        ttk.Label(dev, text="Devices advertising the Pairing service (provisioned). "
-                            "Check reads the pairing status of the chosen central "
-                            "and peripheral.",
+        ttk.Label(dev, text="The boards connected on the Device page. Those with the "
+                            "Pairing service (provisioned) can be chosen; Check reads the "
+                            "pairing status of the chosen central and peripheral.",
                   style="Caption.TLabel", wraplength=theme.px(360), justify="left").pack(
             anchor="w", pady=(theme.px(6), 0))
 
@@ -224,6 +223,7 @@ class PairingFeature(Feature):
             self.role_vars[role].trace_add("write", lambda *a, r=role: self._show_role(r))
         for var in (self.central_var, self.peripheral_var):
             var.trace_add("write", lambda *a: self._update())
+        self._show_found()
         self._update()
         return f
 
@@ -235,19 +235,27 @@ class PairingFeature(Feature):
         stepper.show(*step_position(text, stepper.current))
 
     def _show_found(self):
-        """The devices list, the role choices and the count."""
+        """The devices list, the role choices and the count, from the boards
+        connected now. A choice whose board is gone is cleared."""
+        sessions = self.ctx.devices.connected()
+        self._found = {s.key: s for s in sessions if s.has_characteristic(pairing.STATUS_UUID)}
+        self._checked = {a: st for a, st in self._checked.items() if a in self._found}
+        if not self.busy:
+            for var in (self.central_var, self.peripheral_var):
+                if choice_address(var.get()) and choice_address(var.get()) not in self._found:
+                    var.set("")
         if hasattr(self, "tree"):
             self.tree.delete(*self.tree.get_children())
-            for addr, r in sorted(self._found.items(), key=lambda kv: -kv[1].rssi):
-                self.tree.insert("", "end", iid=addr, values=(
-                    r.name or "(no name)", addr, r.rssi, row_status(self._checked.get(addr))))
-            choices = [choice_text(r.name, a) for a, r in self._found.items()]
+            for s in sessions:
+                status = row_status(self._checked.get(s.key)) if s.key in self._found else NO_SERVICE
+                self.tree.insert("", "end", iid=s.key, values=(s.name or "(no name)", s.key, status))
+            choices = [choice_text(s.name, a) for a, s in self._found.items()]
             for combo in self._combos:
                 combo.configure(values=choices)
         n = len(self._found)
         if hasattr(self, "found_pill"):
-            self.found_pill.set(f"{n} found" if n else "None found", "ok" if n else "warn")
-        # Default roles: the first two devices found
+            self.found_pill.set(f"{n} connected" if n else "None connected", "ok" if n >= 2 else "warn")
+        # Default roles: the first two boards connected
         addrs = list(self._found)
         if len(addrs) >= 2 and not choice_address(self.central_var.get()) \
                 and not choice_address(self.peripheral_var.get()):
@@ -285,21 +293,18 @@ class PairingFeature(Feature):
 
     def _update(self):
         busy = self.busy
-        main_busy = self.ctx.link.state != LinkState.IDLE
         roles = self._roles()
         distinct = roles is not None and roles[0][0] != roles[1][0]
         paired = distinct and self._already_paired(roles)
-        idle = not busy and not main_busy
-        for btn in (self.scan_btn, self.swap_btn):
-            btn.state(["!disabled"] if idle else ["disabled"])
+        idle = not busy
+        self.swap_btn.state(["!disabled"] if idle else ["disabled"])
         self.check_btn.state(["!disabled"] if idle and self._selected() else ["disabled"])
         self.pair_btn.state(["!disabled"] if idle and distinct and not paired else ["disabled"])
         self.cancel_btn.state(["!disabled"] if busy else ["disabled"])
         self.unpair_c_btn.state(["!disabled"] if idle and roles else ["disabled"])
         self.unpair_p_btn.state(["!disabled"] if idle and roles else ["disabled"])
-        if main_busy:
-            set_var(self.hint_var, "Disconnect on the Device page first: this page makes its "
-                                   "own link to each device.")
+        if not busy and len(self._found) < 2:
+            set_var(self.hint_var, CONNECT_HINT)
         elif roles is not None and not distinct:
             set_var(self.hint_var, "Choose two different devices.")
         elif paired:
@@ -312,28 +317,22 @@ class PairingFeature(Feature):
         self.ctx.log(f"pairing: {text}", level)
 
     # ---- work --------------------------------------------------------------
+    def _link_for(self, address: str):
+        """The connected link to a board, or None."""
+        session = self.ctx.devices.get(address)
+        return session.link if session is not None and session.connected else None
+
     def _orchestrator(self) -> pairing.PairingOrchestrator:
-        """On the BLE loop; its callbacks come back to the Tk thread."""
+        """On the BLE loop; its callbacks come back to the Tk thread. It works
+        on the Device page's links and never opens or closes one."""
         call = self.ctx.bus.call
         return pairing.PairingOrchestrator(
-            self._make_link, log=lambda t: call(self._log, t),
+            existing=self._link_for, log=lambda t: call(self._log, t),
             on_status=lambda label, st: call(self._status_arrived, label, st))
 
     def _status_arrived(self, label: str, st: pairing.PairStatus):
         if label in self.role_vars and self._task == "pair":
             self.role_vars[label].set(st.describe())
-
-    def _scan(self):
-        self._reset_progress()
-        link = self._make_link("scan")
-
-        def done(results):
-            self._found = {r.address.upper(): r for r in results
-                           if pairing.SERVICE_UUID in (u.lower() for u in r.service_uuids)}
-            self._checked = {a: s for a, s in self._checked.items() if a in self._found}
-            self._show_found()
-            self._log(f"scan: {len(self._found)} device(s) advertise the Pairing service")
-        self._run("scan", link.scan(self.ctx.settings.scan_timeout), done)
 
     def _check(self):
         """Read the pairing status of the chosen central and peripheral, and show
@@ -463,4 +462,9 @@ class PairingFeature(Feature):
         self._update()
 
     def on_disconnected(self, reason):
+        self._update()
+
+    def on_devices_changed(self):
+        """A board connected or disconnected on the Device page."""
+        self._show_found()
         self._update()

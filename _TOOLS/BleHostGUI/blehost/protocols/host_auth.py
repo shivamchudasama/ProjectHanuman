@@ -261,7 +261,7 @@ def _refused_text(p: bytes) -> str:
     if not p:
         return ""
     return (f"0x{p[0]:02x} {setu.app_type_name(p[0])}: not allowed for an untrusted host "
-            "(authenticate on the Host access page)")
+            "(authenticate on the Host Access page)")
 
 
 def _status_text(p: bytes) -> str:

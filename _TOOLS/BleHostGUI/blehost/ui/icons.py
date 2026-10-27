@@ -181,15 +181,33 @@ def has_glyphs() -> bool:
     return available() and _icon_font(16) is not None
 
 
-def _glyph_image(name: str, size: int, colour: str, box: int = None):
-    """The glyph centred in a box x box (default size) transparent image."""
-    box = box or size
+def _glyph_ink(name: str, size: int):
+    """The glyph at size pixels as a mask cropped to its ink, or None if it
+    has none. Measured on the rendered pixels: textbbox() is a pixel off for
+    the icon fonts (its top is below the ink's), which cut the glyphs' top row."""
     font = _icon_font(size)
+    m = 2 * size
+    mask = Image.new("L", (size + 2 * m, size + 2 * m), 0)
+    ImageDraw.Draw(mask).text((m, m), GLYPHS[name], font=font, fill=255)
+    bbox = mask.getbbox()
+    return mask.crop(bbox) if bbox else None
+
+
+def _glyph_image(name: str, size: int, colour: str, box: int = None):
+    """The glyph's ink centred in a box x box (default size) transparent image,
+    the font a pixel smaller where the ink would not fit (some glyphs overhang
+    their em box)."""
+    box = box or size
     img = Image.new("RGBA", (box, box), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    l, t, r, b = d.textbbox((0, 0), GLYPHS[name], font=font)
-    d.text(((box - (r - l)) / 2 - l, (box - (b - t)) / 2 - t), GLYPHS[name], font=font,
-           fill=_rgb(colour))
+    for n in range(size, max(1, size - 4) - 1, -1):
+        ink = _glyph_ink(name, n)
+        if ink is None or (ink.width <= box and ink.height <= box):
+            break
+    if ink is not None:
+        ink = ink.crop((0, 0, min(ink.width, box), min(ink.height, box)))
+        mark = Image.new("RGBA", ink.size, _rgb(colour))
+        mark.putalpha(ink)
+        img.paste(mark, ((box - ink.width) // 2, (box - ink.height) // 2))
     return img
 
 

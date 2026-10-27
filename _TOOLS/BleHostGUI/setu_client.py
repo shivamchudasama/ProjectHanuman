@@ -50,8 +50,8 @@ with --store NAME the device also stores it as the file /FLASH_DISK:/FW/NAME on 
 external flash (BEGIN / COMMIT), and the file's size and CRC-32 are checked.
 fs runs the device's file commands (_DOC/FileSysManager/PROTOCOL.md), the
 FileSystemPoC's UART test harness over BLE: fs mkdir|cd|openr|openw|delfile|deldir
-PATH, fs write TEXT (or --hex HEX, or --from LOCALFILE), fs read [N], fs ls,
-fs close, fs abort; fs get REMOTE LOCAL and fs put LOCAL REMOTE copy a whole file;
+PATH, fs write TEXT (or --hex HEX, or --from LOCALFILE), fs read [N] (N bytes, or
+to the end of the open file, in as many READs as that takes), fs ls, fs close, fs abort; fs get REMOTE LOCAL and fs put LOCAL REMOTE copy a whole file;
 fs shell reads the UART harness's command lines (type help).
 provision runs device provisioning (_DOC/Provisioning/PROTOCOL.md) with the CA
 in --ca (the GUI's default folder if omitted; created if it does not exist);

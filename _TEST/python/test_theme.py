@@ -207,6 +207,8 @@ def test_apply_draws_the_flat_theme_in_the_palette(root):
         assert s.lookup("Rail.TFrame", "background") == p["rail"]
         assert s.lookup("Rail.Toolbutton", "background", ["selected"]) == p["sel"]
         assert s.lookup("Caption.TLabel", "foreground") == p["sub"]
+        for style in ("TButton", "Toggle.TButton", "TMenubutton"):
+            assert str(s.lookup(style, "width")) == "0", f"{style}: as wide as its text and icon"
         assert str(root.cget("background")) == p["bg"]
         assert "arrow" not in str(s.layout("Vertical.TScrollbar")), "a thumb in a trough"
 
@@ -426,6 +428,57 @@ def test_hex_segments_section_counts_the_segments(root, tmp_path):
     assert f.seg_section.title == "Segments"
 
 
+class BoardLink:
+    """A board's link for core/devices.py: connects at once, as BleLink reports it."""
+
+    def __init__(self, label=""):
+        self.label = label
+        self.state = LinkState.IDLE
+        self.info = {}
+        self.on_state = None
+        self.gatt = None
+        self.mtu_size = 0
+
+    @property
+    def connected(self):
+        return self.state == LinkState.CONNECTED
+
+    def add_connect_hook(self, fn):
+        pass
+
+    def add_disconnect_hook(self, fn):
+        pass
+
+    def _set(self, state, **info):
+        self.state, self.info = state, info
+        if self.on_state:
+            self.on_state(self, state, dict(info))
+
+    async def connect(self, address, name="", timeout=15.0, device=None):
+        self.gatt = types.SimpleNamespace(has_characteristic=lambda uuid: False)
+        self.mtu_size = 247
+        self._set(LinkState.CONNECTED, address=address, name=name, mtu=247)
+
+    def drop(self, reason="link lost"):
+        self.gatt, self.mtu_size = None, 0
+        self._set(LinkState.IDLE, reason=reason)
+
+    def device(self, address):
+        return None
+
+
+def pump(ctx):
+    """Hand the bus's queued events to the window, as the Tk pump would."""
+    import queue
+    while True:
+        try:
+            topic, payload = ctx.bus._q.get_nowait()
+        except queue.Empty:
+            return
+        for fn in ctx.bus._subs.get(topic, ()):
+            fn(payload)
+
+
 def test_main_window_builds_and_switches(root, monkeypatch):
     from blehost.features.hex_upload import HexUploadFeature
     from blehost.features.provisioning import ProvisioningFeature
@@ -434,8 +487,12 @@ def test_main_window_builds_and_switches(root, monkeypatch):
 
     monkeypatch.setattr(th, "system_mode", lambda: th.LIGHT)
     monkeypatch.setattr(fp.CertificateAuthority, "exists", staticmethod(lambda folder: False))
+    from blehost.core.devices import ActiveService, DeviceManager
     ctx = AppContext()
-    ctx.services[SETUService.NAME] = SETUService(ctx)
+    ctx.devices = DeviceManager(ctx.bus, ctx.tap, make_link=BoardLink)
+    ctx.devices.add_session_hook(
+        lambda s: s.services.__setitem__(SETUService.NAME, SETUService(ctx, s.link)))
+    ctx.services[SETUService.NAME] = ActiveService(ctx.devices, SETUService.NAME)
     ctx.services["pc_server"] = types.SimpleNamespace(available=False, subscribers=0, error="test",
                                                       receiver=None)
     win = mw.MainWindow(root, ctx, [HexUploadFeature, ProvisioningFeature])
@@ -451,14 +508,16 @@ def test_main_window_builds_and_switches(root, monkeypatch):
         return [k for k, p in win.pages.items() if p.built and p.frame.winfo_manager()]
     assert mapped() == ["device"]
 
-    # Connecting from the device page opens the first feature; an unbuilt
-    # feature is not told (it shows the link when it is built)
-    ctx.link.state = LinkState.CONNECTED
-    win._on_link_state((LinkState.CONNECTED, {"name": "dev", "address": "AA", "mtu": 247}))
+    # Connecting the first board leaves the window on the device page;
+    # an unbuilt feature is not told (it shows the link when it is built)
+    import asyncio
+    asyncio.run(ctx.devices.connect("AA:00:00:00:00:01", "dev"))
+    pump(ctx)
     assert win.status_pill.tone == "ok" and win.conn.name_var.get() == "dev"
-    assert "ATT MTU 247" in win.status_var.get()
-    assert win.current_page == "feature0" and mapped() == ["feature0"]
-    assert not win.pages["feature1"].built
+    assert "ATT MTU 247" in win.status_var.get() and "more" not in win.status_var.get()
+    assert win.current_page == "device" and mapped() == ["device"], "only the user changes pages"
+    assert win.conn.dev_tree.set("AA:00:00:00:00:01", "state") == "Active"
+    assert not any(win.pages[k].built for k in ("feature0", "feature1"))
     win.conn._caps_done((2, 244, 16, 247))
     assert win.conn._facts["Window"].get() == "16" and win.conn.details.is_open
 
@@ -473,7 +532,9 @@ def test_main_window_builds_and_switches(root, monkeypatch):
     assert prov_tab.stepper.current == 1
 
     assert win.mode_btn.mode == th.DARK and "dark" in win.mode_tip.text
+    logo = str(win._logo.cget("image"))
     win._toggle_mode()
+    assert str(win._logo.cget("image")) == logo, "the logo keeps its blue in dark mode"
     assert win.theme.mode == th.DARK and win.mode_var.get() == th.DARK
     assert win.mode_btn.mode == th.LIGHT and "light" in win.mode_tip.text
 
@@ -502,10 +563,31 @@ def test_main_window_builds_and_switches(root, monkeypatch):
     win.traffic.set_capture(False)
     assert not ctx.tap.enabled and win.pages["traffic"].badge is None
 
-    ctx.link.state = LinkState.IDLE
-    win._on_link_state((LinkState.IDLE, {"reason": "link lost"}))
+    # A second board: the window stays on the device page, the header counts it
+    first = ctx.devices.active
+    asyncio.run(ctx.devices.connect("BB:00:00:00:00:02", "dev2"))
+    pump(ctx)
+    assert win.current_page == "device", "not sent away while connecting more boards"
+    assert ctx.devices.active.name == "dev2" and "dev2" in win.status_var.get()
+    assert win.status_var.get().endswith("+1 more")
+    assert win.conn.dev_tree.set("AA:00:00:00:00:01", "state") == "Connected"
+    assert "active device" not in win.log_text.get("1.0", "end")
+    # Back to the first board: a switch, logged as such
+    assert ctx.devices.set_active(first.address)
+    pump(ctx)
+    assert ctx.link is first.link and "[AA:00:00:00:00:01]" in win.status_var.get()
+    assert "active device: dev" in win.log_text.get("1.0", "end")
+    assert win.current_page == "device"
+
+    # The active board's link drops: no active device until the user picks one
+    first.link.drop()
+    pump(ctx)
     assert win.status_pill.text == "Idle" and win.conn._facts["Window"].get() == "–"
-    assert win.status_var.get() == "Not connected (link lost)"
+    assert win.status_var.get() == "No active device (link lost)  ·  +1 more"
+    assert "dev: link lost" in win.log_text.get("1.0", "end")
+    ctx.devices.get("BB:00:00:00:00:02").link.drop("disconnected")
+    pump(ctx)
+    assert win.status_var.get() == "Not connected (disconnected)"
     win._set_mode(th.LIGHT)
 
 

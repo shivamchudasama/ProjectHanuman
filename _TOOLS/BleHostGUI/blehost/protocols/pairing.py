@@ -8,9 +8,12 @@ between themselves.
 PairingOrchestrator works on any link object with
     await connect(address, name), await disconnect(),
     gatt.read_gatt_char(uuid), gatt.write_gatt_char(uuid, data, response=...),
-    await start_notify(uuid, callback(sender, data)),
+    await start_notify(uuid, callback(sender, data)), await stop_notify(uuid),
 which is what core/ble_link.BleLink offers (the GUI) and what the command
-line's small bleak adapter offers (setu_client.py pair).
+line's small bleak adapter offers (setu_client.py pair). The command line
+makes a link per device and run (make_link); the GUI lends the links of the
+boards connected on its Device page (existing), which the orchestrator never
+connects or disconnects.
 """
 
 import asyncio
@@ -309,25 +312,38 @@ class PairingDevice:
     """One device, over one link: STATUS (read and notified) and CONTROL."""
 
     def __init__(self, link, address: str, name: str = "", label: str = "",
-                 on_status: Optional[Callable] = None, changed: Optional[asyncio.Event] = None):
+                 on_status: Optional[Callable] = None, changed: Optional[asyncio.Event] = None,
+                 owned: bool = True):
         self.link = link
+        self.owned = owned              # opened and closed here; False: a borrowed, connected link
         self.address = address
         self.name = name
         self.label = label or address
         self.status: Optional[PairStatus] = None
         self._on_status = on_status
         self._changed = changed or asyncio.Event()
+        self._subscribed = False
 
     async def open(self) -> PairStatus:
-        await self.link.connect(self.address, self.name)
+        """Connect (an owned link), subscribe to STATUS and read it."""
+        if self.owned:
+            await self.link.connect(self.address, self.name)
+        elif not getattr(self.link, "connected", False):
+            raise PairingError(f"the {self.label} device is not connected")
         await self.link.start_notify(STATUS_UUID, self._notified)
+        self._subscribed = True
         return await self.read_status()
 
     async def close(self):
+        """Disconnect an owned link; on a borrowed one only unsubscribe."""
         try:
-            await self.link.disconnect()
+            if self.owned:
+                await self.link.disconnect()
+            elif self._subscribed and getattr(self.link, "connected", False):
+                await self.link.stop_notify(STATUS_UUID)
         except Exception:
             pass                                    # the link may be gone already
+        self._subscribed = False
 
     async def read_status(self) -> PairStatus:
         self._update(await self.link.gatt.read_gatt_char(STATUS_UUID))
@@ -349,7 +365,7 @@ class PairingDevice:
                     raise
                 if attempt == auth_retries:
                     raise PairingError(f"the {self.label} device does not trust this PC: authenticate "
-                                       "it on the Host access page first") from None
+                                       "it on the Host Access page first") from None
                 await asyncio.sleep(delay)
 
     def _notified(self, _sender, data):
@@ -380,15 +396,19 @@ class PairingOrchestrator:
     """Runs a pairing between two devices (and the single-device checks).
 
     make_link(label) returns a fresh, unconnected link object (see the module
-    docstring). log(text) and on_status(label, PairStatus) are called on the
-    event loop; a GUI forwards them to its own thread.
+    docstring); existing(address) returns a connected link to that device, or
+    None. A device's existing link is used as it is; without one, make_link
+    makes a link for the run (no make_link: PairingError, not connected).
+    log(text) and on_status(label, PairStatus) are called on the event loop;
+    a GUI forwards them to its own thread.
     """
 
-    def __init__(self, make_link: Callable, log: Callable = print,
+    def __init__(self, make_link: Optional[Callable] = None, log: Callable = print,
                  on_status: Optional[Callable] = None, timeout: float = RUN_TIMEOUT,
                  fail_grace: float = FAIL_GRACE, poll: float = POLL_PERIOD,
-                 start_settle: float = START_SETTLE):
+                 start_settle: float = START_SETTLE, existing: Optional[Callable] = None):
         self._make_link = make_link
+        self._existing = existing
         self._log = log
         self._on_status = on_status
         self.timeout = timeout
@@ -398,6 +418,11 @@ class PairingOrchestrator:
 
     def _device(self, address: str, name: str, label: str,
                 changed: Optional[asyncio.Event] = None) -> PairingDevice:
+        link = self._existing(address) if self._existing else None
+        if link is not None:
+            return PairingDevice(link, address, name, label, self._on_status, changed, owned=False)
+        if self._make_link is None:
+            raise PairingError(f"{name or address} is not connected: connect it on the Device page")
         return PairingDevice(self._make_link(label), address, name, label, self._on_status, changed)
 
     async def probe(self, address: str, name: str = "") -> PairStatus:
@@ -427,11 +452,12 @@ class PairingOrchestrator:
     async def pair(self, central: tuple, peripheral: tuple) -> PairingOutcome:
         """Pair central=(address, name) with peripheral=(address, name).
 
-        Connects to both, checks they are provisioned, not in a run and not
-        paired with each other already (paired_with_each_other), sends START to
-        the peripheral then to the central, follows both STATUS until both are
-        PAIRED or one has FAILED (or the time limit, which cancels both), and
-        disconnects. Raises PairingError when the run cannot start."""
+        Connects to both (or takes their existing links), checks they are
+        provisioned, not in a run and not paired with each other already
+        (paired_with_each_other), sends START to the peripheral then to the
+        central, follows both STATUS until both are PAIRED or one has FAILED
+        (or the time limit, which cancels both), and disconnects the links it
+        made. Raises PairingError when the run cannot start."""
         if central[0].upper() == peripheral[0].upper():
             raise PairingError("choose two different devices")
         changed = asyncio.Event()
@@ -440,7 +466,8 @@ class PairingOrchestrator:
         started = False
         try:
             for dev in (p, c):
-                self._log(f"{dev.label}: connecting to {dev.name or dev.address}")
+                verb = "connecting to" if dev.owned else "using the link to"
+                self._log(f"{dev.label}: {verb} {dev.name or dev.address}")
                 st = await dev.open()
                 self._log(f"{dev.label}: {st.describe()}")
                 if not st.provisioned:

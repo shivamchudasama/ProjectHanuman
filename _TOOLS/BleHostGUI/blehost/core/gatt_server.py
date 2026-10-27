@@ -14,12 +14,18 @@ the peripheral role; it uses the winrt packages bleak already installs.
 (bless, the usual Python GATT server library, cannot be installed next to
 bleak >= 1 on Python 3.12: its winrt pins conflict.)
 
+Several boards: Windows publishes the service to every board the PC is
+connected to. The backend reports which board wrote (the write's GATT
+session) and which boards subscribe, and PcGattServer takes writes from the
+active device only (set_peer(), core/devices.py) and notifies only it.
+
 Threading: WinRT raises its events on its own threads. The backend hands each
 written value to the asyncio loop in arrival order; the receiver runs on the
 loop only, as BleLink's code does.
 """
 
 import asyncio
+import re
 import sys
 import uuid
 
@@ -33,10 +39,24 @@ class GattServerUnavailable(RuntimeError):
     """This PC cannot host the service (OS, adapter or driver)."""
 
 
+_ADDRESS = re.compile(r"([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})$")
+
+
+def session_address(session) -> str:
+    """The board's address from a WinRT GattSession ('BluetoothLE#BluetoothLE
+    <adapter>-<board>' device ID), upper case; '' if it cannot be told."""
+    try:
+        m = _ADDRESS.search(str(session.device_id.id))
+    except Exception:                               # noqa: BLE001 - unknown is ''
+        return ""
+    return m.group(1).upper() if m else ""
+
+
 class WinRtBackend:
     """Hosts the SETU service with WinRT's GattServiceProvider.
 
-    on_write(data: bytes) and on_subscribed(count: int) are called on `loop`.
+    on_write(data: bytes, sender: str) and on_subscribed(addresses: list) are
+    called on `loop`; an address is '' where WinRT does not tell it.
     """
 
     def __init__(self, base: str, loop, on_write, on_subscribed, log):
@@ -132,8 +152,8 @@ class WinRtBackend:
         self.loop.call_soon_threadsafe(self._writes.put_nowait, (args, deferral))
 
     def _subscribed_changed(self, sender, _args):
-        n = len(list(sender.subscribed_clients))
-        self.loop.call_soon_threadsafe(self.on_subscribed, n)
+        clients = [session_address(getattr(c, "session", None)) for c in sender.subscribed_clients]
+        self.loop.call_soon_threadsafe(self.on_subscribed, clients)
 
     async def _pump_writes(self):
         """One write at a time, in arrival order (DATA frames must not overtake)."""
@@ -148,22 +168,39 @@ class WinRtBackend:
                 data = bytes(reader.read_byte() for _ in range(reader.unconsumed_buffer_length))
                 if request.option == GattWriteOption.WRITE_WITH_RESPONSE:
                     request.respond()
-                self.on_write(data)
+                self.on_write(data, session_address(getattr(args, "session", None)))
             except Exception as e:
                 self.log(f"PC GATT server: write failed: {e}")
             finally:
                 deferral.complete()
 
     # ---- loop -> WinRT ----------------------------------------------------------
-    def notify(self, frame: bytes):
+    def notify(self, frame: bytes, peer=None):
+        """Notify CTRL: to the subscribed board at address peer only, when it is
+        found among the subscribers; to every subscriber otherwise."""
         from winrt.windows.storage.streams import DataWriter
 
         if self._ctrl is None:
             return
         w = DataWriter()
         w.write_bytes(frame)
-        op = self._ctrl.notify_value_async(w.detach_buffer())   # starts now: order kept
+        buf = w.detach_buffer()
+        client = self._client_for(peer)
+        if client is not None:                                  # starts now: order kept
+            op = self._ctrl.notify_value_for_subscribed_client_async(buf, client)
+        else:
+            op = self._ctrl.notify_value_async(buf)
         asyncio.ensure_future(self._await_notify(op))
+
+    def _client_for(self, peer):
+        if not peer:
+            return None
+        try:
+            clients = list(self._ctrl.subscribed_clients)
+        except Exception:                               # noqa: BLE001 - notify them all
+            return None
+        return next((c for c in clients if session_address(getattr(c, "session", None)) == peer),
+                    None)
 
     async def _await_notify(self, op):
         try:
@@ -189,7 +226,10 @@ class PcGattServer:
         self.backend = None
         self.available = False
         self.error = None
-        self.subscribers = 0
+        self.subscribers = 0                # subscribed boards whose writes are taken
+        self.peer = None                    # the active device's address (set_peer)
+        self._clients = []                  # subscribed boards' addresses ('' if unknown)
+        self._ignored = set()               # boards whose writes were refused (logged once)
         self.receiver = SETUReceiver(self._notify, log=lambda t: self.log(t))
         self.receiver.subscribed = False
         self._backend_factory = backend_factory
@@ -214,23 +254,56 @@ class PcGattServer:
             self.backend = None
         self.available = False
 
-    def link_lost(self):
-        """The BLE connection is gone: a running transfer fails as DISCONNECTED."""
+    def set_peer(self, address):
+        """Take writes from the board at address only (the active device), and
+        notify only it; None takes them from any board. A transfer from the
+        board before ends as DISCONNECTED."""
+        peer = (address or "").upper() or None
+        if peer == self.peer:
+            return
+        self.peer = peer
+        self._ignored = set()
         self.receiver.disconnected()
-        self._on_subscribed(0)
+        self._refresh_subscribed()
+
+    def link_lost(self, address=None):
+        """A BLE connection is gone (address: that board's; None: every one): a
+        running transfer from that board fails as DISCONNECTED."""
+        address = (address or "").upper()
+        if not address or not self.peer or address == self.peer:
+            self.receiver.disconnected()
+        self._clients = [c for c in self._clients if address and c != address]
+        self._refresh_subscribed()
 
     # ---- backend callbacks (on the loop) -----------------------------------------
-    def _on_write(self, data: bytes):
+    def _takes(self, sender: str) -> bool:
+        """A write or subscription from sender counts ('' when unknown)."""
+        return not self.peer or not sender or sender == self.peer
+
+    def _on_write(self, data: bytes, sender: str = ""):
+        sender = (sender or "").upper()
+        if not self._takes(sender):
+            if sender not in self._ignored:
+                self._ignored.add(sender)
+                self.log(f"PC SETU service: writes from {sender} ignored, it is not the active device")
+            return
         if self.tap is not None:
             self.tap.rx("WNR", setu_client.char_uuid(1, self.base), data, "PC service")
         self.receiver.on_write(data)
 
-    def _on_subscribed(self, count: int):
-        self.subscribers = count
-        self.receiver.subscribed = count > 0       # PROTOCOL.md §7.1 step 1
+    def _on_subscribed(self, clients):
+        """clients: the subscribed boards' addresses (a count from older callers)."""
+        if isinstance(clients, int):
+            clients = [""] * clients
+        self._clients = [(c or "").upper() for c in clients]
+        self._refresh_subscribed()
+
+    def _refresh_subscribed(self):
+        self.subscribers = sum(1 for c in self._clients if self._takes(c))
+        self.receiver.subscribed = self.subscribers > 0     # PROTOCOL.md §7.1 step 1
 
     def _notify(self, frame: bytes):
         if self.tap is not None:
             self.tap.tx("NOTIFY", setu_client.char_uuid(2, self.base), frame, "PC service")
         if self.backend is not None:
-            self.backend.notify(frame)
+            self.backend.notify(frame, self.peer)

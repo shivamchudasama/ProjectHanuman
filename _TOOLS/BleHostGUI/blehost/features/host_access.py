@@ -1,4 +1,4 @@
-"""Host access: authenticate this PC to the connected device and bond with it
+"""Host Access: authenticate this PC to the connected device and bond with it
 (_DOC/HostAuth/PROTOCOL.md).
 
 A provisioned device lets only its one trusted host reach its functions (hex
@@ -75,7 +75,7 @@ def state_pill(text: str):
 
 
 class HostAccessFeature(Feature):
-    title = "Host access"
+    title = "Host Access"
     icon = "key"
 
     def __init__(self, ctx):

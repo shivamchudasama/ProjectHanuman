@@ -6,11 +6,12 @@ Features and protocol modules never hold a BleakClient. They use:
   - BleLink.start_notify(), which reports every notification;
   - connect/disconnect hooks, run on the asyncio loop.
 
-All coroutines here run on the AsyncRunner loop. State changes of the main
-link (ctx.link) are posted to the EventBus (LINK_STATE) for the Tk side. A
-feature that needs links of its own (the Pairing page talks to two devices at
-once) makes more BleLinks with primary=False and a label: they post no
-LINK_STATE, and their traffic is tagged with the label.
+All coroutines here run on the AsyncRunner loop. The GUI's links belong to
+core/devices.DeviceManager: one per connected board, made with primary=False
+and a label (their traffic is tagged with it), plus one that only scans. They
+report their state changes through on_state, and the manager posts
+LINK_STATE for the active device only. A link made with primary=True posts
+LINK_STATE itself.
 """
 
 import asyncio
@@ -66,11 +67,12 @@ class GattFacade:
 
 
 class BleLink:
-    def __init__(self, bus, tap, label: str = "", primary: bool = True):
+    def __init__(self, bus, tap, label: str = "", primary: bool = True, on_state=None):
         self._bus = bus
         self._tap = tap
-        self.label = label              # tags this link's traffic ("" for the main link)
-        self.primary = primary          # only the main link drives the window (LINK_STATE)
+        self.label = label              # tags this link's traffic ("" for none)
+        self.primary = primary          # posts LINK_STATE itself
+        self.on_state = on_state        # on_state(link, state, info) on every change, on the loop
         self._devices = {}              # address -> BLEDevice from the last scan
         self._client = None
         self.gatt: GattFacade | None = None
@@ -101,6 +103,8 @@ class BleLink:
         self.info = info
         if self.primary:
             self._bus.post(LINK_STATE, (state, dict(info)))
+        if self.on_state is not None:
+            self.on_state(self, state, dict(info))
 
     def _info(self, op: str, note: str):
         self._tap.info(op, f"[{self.label}] {note}" if self.label else note)
@@ -128,13 +132,19 @@ class BleLink:
         self._info("SCAN", f"{len(results)} device(s) found")
         return results
 
+    def device(self, address: str):
+        """The BLEDevice the last scan found at address, or None."""
+        return self._devices.get(address)
+
     # ---- connect / disconnect ----------------------------------------------
-    async def connect(self, address: str, name: str = "", timeout: float = 15.0):
+    async def connect(self, address: str, name: str = "", timeout: float = 15.0, device=None):
+        """Connect to address; device: its BLEDevice from another link's scan
+        (device()), which saves bleak a scan of its own."""
         from bleak import BleakClient
 
         if self._client is not None:
             raise RuntimeError("already connected")
-        target = self._devices.get(address, address)
+        target = device or self._devices.get(address, address)
         self._set_state(LinkState.CONNECTING, address=address, name=name)
         self._info("CONNECT", f"connecting to {name or '?'} [{address}]")
         client = BleakClient(target, disconnected_callback=self._on_bleak_disconnect, timeout=timeout)

@@ -3,21 +3,30 @@
 The FileSystemPoC's UART test harness, through the GUI: its command lines
 (mkdir, cd, openr, openw, write, read, ls, delfile, deldir, close, abort, help)
 run as typed, and each has a button. A listing fills the table; read data is
-shown as a hex dump. Download… reads a whole file to the PC, Write file… writes
-a PC file into the file open for writing.
+shown as a hex dump. Read (and `read [N]`) reads the open file to its end, or N
+bytes, in as many READs as that takes. Download… reads a whole file to the PC,
+Write file… writes a PC file into the file open for writing. Read, Write,
+Write file… and Download… show their progress (a percentage when the size is
+known: the data, a count, or the file's size in the last listing) and end with
+the time and the average rate. Stop ends a Read or a write after the command in
+flight.
 """
 
 import os
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from ..protocols import setu
 from ..protocols import filesystem as fsp
 from ..ui import theme as th
-from ..ui.widgets import Disclosure, Pill, StatTile, card, set_icon, set_var
+from ..ui.widgets import Disclosure, Pill, StatTile, Tooltip, card, set_icon, set_var
 from .base import Feature
 
 ROOT = "/FLASH_DISK:"
+SHOW_MAX = 64 * 1024                      # read data shown as a hex dump (4096 lines)
+PROGRESS_MS = 66                          # a transfer's progress is shown at most this often
+VERBS = {"read": "reading", "write": "writing", "download": "downloading"}
 
 # Path buttons: (attribute, text, op, icon)
 PATH_BUTTONS = (
@@ -38,6 +47,21 @@ def entry_row(e: fsp.Entry) -> tuple:
     return (e.path, "dir" if e.is_dir else "file", "" if e.is_dir else f"{e.size:,}")
 
 
+def device_path(path: str, cwd):
+    """The absolute path OPENR takes `path` for: as is, from the root, or from the
+    current directory (None while that is not known)."""
+    if path.startswith(ROOT):
+        return path
+    if path.startswith("/"):
+        return ROOT + path
+    return None if cwd is None else f"{cwd.rstrip('/')}/{path}"
+
+
+def kbit_s(n: int, seconds: float) -> str:
+    """n bytes in `seconds` as kbit/s, one decimal."""
+    return f"{n * 8 / max(seconds, 1e-3) / 1000:.1f}"
+
+
 class FileSystemFeature(Feature):
     title = "Files"
     icon = "files"
@@ -52,6 +76,15 @@ class FileSystemFeature(Feature):
         self.open_file = None             # (path, "read" | "write") while one is open
         self.entries = []
         self.read_data = b""
+        self._read_pos = 0                # bytes read since the file was opened for reading
+        self._xfer = None                 # the transfer in progress: "read", "write", "download"
+        self._stop = False                # Stop asked for it to end
+        self._xfer_total = None           # its size, if known
+        self._xfer_what = ""
+        self._t_xfer = 0.0                # when it started
+        self._sent = 0                    # bytes of it so far
+        self._pending_progress = None     # latest (sent, total) not shown yet
+        self._progress_after = None
 
     # ---- UI ----------------------------------------------------------------
     def build(self, parent):
@@ -79,7 +112,8 @@ class FileSystemFeature(Feature):
         tiles.pack(fill="x", pady=sp("m"))
         self.tile_dir = StatTile(tiles, "Directory", "–", "not known yet")
         self.tile_file = StatTile(tiles, "Open file", "–", "none")
-        for i, t in enumerate((self.tile_dir, self.tile_file)):
+        self.tile_xfer = StatTile(tiles, "Transfer", "–", "none")
+        for i, t in enumerate((self.tile_dir, self.tile_file, self.tile_xfer)):
             t.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else sp("m"), 0))
             tiles.columnconfigure(i, weight=1, uniform="tile")
 
@@ -113,14 +147,27 @@ class FileSystemFeature(Feature):
         self.writefile_btn = ttk.Button(wrow, text="Write file…", command=self.write_file)
         self.writefile_btn.pack(side="left", padx=(sp("s"), 0))
         set_icon(self.writefile_btn, theme, "upload")
+        grow = ttk.Frame(ops)
+        grow.pack(fill="x", pady=(sp("s"), 0))
+        self.progress = ttk.Progressbar(grow, mode="determinate", length=240)
+        self.progress.pack(side="left", fill="x", expand=True)
+        self.progress_var = tk.StringVar()
+        ttk.Label(grow, textvariable=self.progress_var, width=38, anchor="e",
+                  style="MonoCaption.TLabel").pack(side="left", padx=(sp("m"), 0))
 
         rrow = ttk.Frame(ops)
         rrow.pack(fill="x", pady=(sp("m"), 0))
         ttk.Label(rrow, text="Bytes").pack(side="left")
-        self.count_var = tk.StringVar(value=str(fsp.READ_MAX))
-        ttk.Entry(rrow, textvariable=self.count_var, width=6).pack(side="left", padx=sp("s"))
+        self.count_var = tk.StringVar()
+        count_entry = ttk.Entry(rrow, textvariable=self.count_var, width=8)
+        count_entry.pack(side="left", padx=sp("s"))
+        Tooltip(count_entry, "Empty: to the end of the file; a number: that many bytes", theme)
         self.read_btn = ttk.Button(rrow, text="Read", command=self.read)
         self.read_btn.pack(side="left")
+        self.stop_btn = ttk.Button(rrow, text="Stop", command=self.stop)
+        self.stop_btn.pack(side="left", padx=(sp("s"), 0))
+        set_icon(self.stop_btn, theme, "stop")
+        Tooltip(self.stop_btn, "End the Read or write after the command in flight", theme)
         self.ls_btn = ttk.Button(rrow, text="List", command=lambda: self.start("LS"))
         self.ls_btn.pack(side="left", padx=(sp("m"), 0))
         set_icon(self.ls_btn, theme, "refresh")
@@ -171,6 +218,10 @@ class FileSystemFeature(Feature):
             btn = getattr(self, name, None)
             if btn is not None:
                 btn.state(["!disabled"] if ready else ["disabled"])
+        stop_btn = getattr(self, "stop_btn", None)
+        if stop_btn is not None:
+            stoppable = self._xfer in ("read", "write") and not self._stop
+            stop_btn.state(["!disabled"] if stoppable else ["disabled"])
         if not self.ctx.link.connected:
             self.state_pill.set("Not connected", "idle")
         elif not self._available:
@@ -192,13 +243,16 @@ class FileSystemFeature(Feature):
             self.tree.insert("", "end", iid=str(i), values=entry_row(e))
         self.list_section.set_title(f"Listing ({len(self.entries)})")
 
-    def _show_read(self, data: bytes, title: str):
+    def _show_read(self, data: bytes, note: str):
+        """Read data as a hex dump (its first SHOW_MAX bytes), titled "Read data (note)"."""
         self.read_data = data
         self.read_text.configure(state="normal")
         self.read_text.delete("1.0", "end")
-        self.read_text.insert("1.0", "\n".join(fsp.hexdump(data)) if data else "(end of file)")
+        self.read_text.insert("1.0", "\n".join(fsp.hexdump(data[:SHOW_MAX])) if data else "(end of file)")
         self.read_text.configure(state="disabled")
-        self.read_section.set_title(title)
+        if len(data) > SHOW_MAX:
+            note += f", first {SHOW_MAX // 1024} KiB shown"
+        self.read_section.set_title(f"Read data ({note})")
         self.read_section.set_open(True)
 
     def _pick_entry(self):
@@ -218,6 +272,7 @@ class FileSystemFeature(Feature):
                 self.cwd = r.text
             elif r.op in (fsp.OPS["OPENR"], fsp.OPS["OPENW"]):
                 self.open_file = (r.text, "read" if r.op == fsp.OPS["OPENR"] else "write")
+                self._read_pos = 0
             elif r.op == fsp.OPS["CLOSE"]:
                 self.open_file = None
             elif r.op == fsp.OPS["ABORT"]:
@@ -229,9 +284,14 @@ class FileSystemFeature(Feature):
                 self.entries = list(r.entries)
                 self._show_entries()
             elif r.op == fsp.OPS["READ"]:
-                self._show_read(r.data, f"Read data ({len(r.data)} bytes)")
-        elif r.closes_file:
-            self.open_file = None
+                self._read_pos += len(r.data)
+                self._show_read(r.data, f"{len(r.data)} bytes" + (", end of file" if r.eof else ""))
+        else:
+            if r.op == fsp.OPS["READ"] and r.data:
+                # read_to(): what came before the failed READ
+                self._show_read(r.data, f"{len(r.data)} bytes, then {r.status_name}")
+            if r.closes_file:
+                self.open_file = None
 
     # ---- commands ------------------------------------------------------------
     def _session(self) -> fsp.FileSystemSession:
@@ -279,6 +339,9 @@ class FileSystemFeature(Feature):
         if op == "help":
             for h in fsp.HELP:
                 self.ctx.log(f"files: {h}")
+            return
+        if op == "READ":
+            self._read(arg)
             return
         self.start(op, arg)
 
@@ -331,36 +394,98 @@ class FileSystemFeature(Feature):
         self._write(data, os.path.basename(path))
 
     def _write(self, data: bytes, what: str):
+        """WRITEs of the data until all is sent, a WRITE fails or Stop."""
+        if self.busy or not self._available:
+            return
+        total = len(data)
+
+        async def work():
+            s = self._session()
+            try:
+                return await s.write_to(data, progress=self._progress_cb(), stop=lambda: self._stop)
+            finally:
+                self._seq = s.seq
+
+        def done(r):
+            dt = self._xfer_end()
+            self.apply_reply(r)
+            n = r.written
+            if not r.ok:
+                self._show_end(n, failed=r.status_name)
+            elif n < total:
+                self._show_end(n, stopped=True)
+                self.ctx.log(f"files: {what}: write stopped after {n} of {total} bytes", "warn")
+            else:
+                self._show_end(n, dt=dt)
+                self.ctx.log(f"files: {what}: {n} bytes written in {dt:.1f} s, {kbit_s(n, dt)} kbit/s")
+        self._xfer_begin("write", total, what)
+        self._launch(work(), done)
+
+    def read(self):
+        """Read the open file: the Bytes field's count, or to its end when empty."""
+        text = self.count_var.get().strip()
+        try:
+            n = int(text, 10) if text else None
+        except ValueError:
+            n = 0
+        if n is not None and n <= 0:
+            self.ctx.log("files: bytes must be a positive number, or empty for the whole file", "warn")
+            return
+        self._read(n)
+
+    def _read(self, count):
+        """READs until `count` bytes (None: the end of the file) or Stop."""
         if self.busy or not self._available:
             return
 
         async def work():
             s = self._session()
-            r = None
             try:
-                for i in range(0, len(data), fsp.ARG_MAX):
-                    r = await s.command("WRITE", data[i:i + fsp.ARG_MAX])
-                    if not r.ok:
-                        break
+                return await s.read_to(count, progress=self._progress_cb(), stop=lambda: self._stop)
             finally:
                 self._seq = s.seq
-            return r
 
         def done(r):
+            stop = self._stop
+            dt = self._xfer_end()
+            n = len(r.data)
+            stopped = stop and r.ok and not r.eof and (count is None or n < count)
             self.apply_reply(r)
-            if r.ok:
-                self.ctx.log(f"files: {what}: {len(data)} bytes written")
+            if not r.ok:
+                self._show_end(n, failed=r.status_name)
+            elif stopped:
+                self._show_end(n, stopped=True)
+                self.ctx.log(f"files: read stopped after {n} bytes", "warn")
+            else:
+                self._show_end(n, dt=dt)
+                self.ctx.log(f"files: read: {n} bytes in {dt:.1f} s, {kbit_s(n, dt)} kbit/s")
+        left = self._left_to_read()
+        total = count if left is None else left if count is None else min(count, left)
+        self._xfer_begin("read", total, "the open file")
         self._launch(work(), done)
 
-    def read(self):
-        try:
-            n = int(self.count_var.get() or "0", 10)
-        except ValueError:
-            n = -1
-        if not 0 <= n <= 0xFFFF:
-            self.ctx.log("files: bytes must be 0…65535 (0: as many as fit)", "warn")
-            return
-        self.start("READ", fsp.encode_read(n))
+    def _left_to_read(self):
+        """Bytes left in the file open for reading, if the listing gave its size."""
+        if not self.open_file or self.open_file[1] != "read":
+            return None
+        size = self._listed_size(self.open_file[0])
+        return None if size is None else max(size - self._read_pos, 0)
+
+    def _listed_size(self, path):
+        """A file's size from the last listing (None if not listed)."""
+        if path is None:
+            return None
+        key = path.casefold()
+        for e in self.entries:
+            if not e.is_dir and e.path.casefold() == key:
+                return e.size
+        return None
+
+    def stop(self):
+        """End the Read or write in progress after the command in flight."""
+        if self._xfer in ("read", "write") and not self._stop:
+            self._stop = True
+            self._update()
 
     def download(self):
         """Read the file in the path field to a PC file."""
@@ -378,17 +503,123 @@ class FileSystemFeature(Feature):
         async def work():
             s = self._session()
             try:
-                return await s.get(remote)
+                return await s.get(remote, progress=self._progress_cb())
             finally:
                 self._seq = s.seq
 
         def done(data):
-            with open(local, "wb") as fh:
-                fh.write(data)
+            dt = self._xfer_end()
+            n = len(data)
             self.open_file = None
-            self._show_read(data[:4096], f"Read data ({len(data)} bytes downloaded, first 4 KiB)")
-            self.ctx.log(f"files: {remote}: {len(data)} bytes saved to {local}")
+            self._show_read(data[:4096], f"{n} bytes downloaded, first 4 KiB")
+            try:
+                with open(local, "wb") as fh:
+                    fh.write(data)
+            except OSError:
+                self._settle_bar()
+                set_var(self.progress_var, f"read {n:,} B, not saved")
+                self.tile_xfer.set(f"{n:,} B", "not saved")
+                raise
+            self._show_end(n, dt=dt)
+            self.ctx.log(f"files: {remote}: {n} bytes saved to {local} in {dt:.1f} s, "
+                         f"{kbit_s(n, dt)} kbit/s")
+        self._xfer_begin("download", self._listed_size(device_path(remote, self.cwd)),
+                         os.path.basename(remote))
         self._launch(work(), done)
+
+    # ---- transfer progress ---------------------------------------------------
+    def _xfer_begin(self, kind: str, total, what: str):
+        """A Read, write or download starts: total bytes if known (None: the bar
+        runs without an end and shows the bytes and rate only)."""
+        self._xfer, self._stop = kind, False
+        self._xfer_total = total if total else None
+        self._xfer_what = what
+        self._t_xfer = time.perf_counter()
+        self._sent, self._pending_progress = 0, None
+        if self._xfer_total:
+            self.progress.configure(mode="determinate", maximum=self._xfer_total, value=0)
+            set_var(self.progress_var, f"0/{self._xfer_total:,} B")
+        else:
+            self.progress.configure(mode="indeterminate", maximum=100, value=0)
+            set_var(self.progress_var, "0 B")
+        self.tile_xfer.set("0 B", f"{VERBS[kind]} {what}")
+
+    def _progress_cb(self):
+        """progress(bytes so far) for a session call: runs _progress on the Tk thread."""
+        call = self.ctx.bus.call
+        return lambda n: call(self._progress, n)
+
+    def _progress(self, sent: int):
+        """Progress (once per command): keep the latest and show it at most
+        every PROGRESS_MS."""
+        if self._xfer is None:
+            return
+        self._sent = sent
+        if self._xfer == "read":
+            self.read_section.set_title(f"Read data (reading… {sent:,} bytes)")
+        self._pending_progress = sent
+        if self._progress_after is None:
+            self._progress_after = self.progress.after(PROGRESS_MS, self._flush_progress)
+
+    def _flush_progress(self):
+        """Show the pending progress now (the timer, and the end of a transfer)."""
+        if self._progress_after is not None:
+            self.progress.after_cancel(self._progress_after)
+            self._progress_after = None
+        if self._pending_progress is None:
+            return
+        sent, total = self._pending_progress, self._xfer_total
+        self._pending_progress = None
+        rate = kbit_s(sent, time.perf_counter() - self._t_xfer)
+        if total and sent <= total:
+            pct = 100 * sent // total
+            self.progress.configure(value=sent)
+            set_var(self.progress_var, f"{sent:,}/{total:,} B  {pct} %, {rate} kbit/s")
+            self.tile_xfer.set(f"{sent:,} B", f"{pct} % of {total:,} B")
+        else:
+            # Size unknown, or the listing was stale: bytes and rate only
+            if total:
+                self._xfer_total = None
+                self.progress.configure(mode="indeterminate", maximum=100, value=0)
+            self.progress.step(5)
+            set_var(self.progress_var, f"{sent:,} B, {rate} kbit/s")
+            self.tile_xfer.set(f"{sent:,} B", f"{VERBS[self._xfer]} {self._xfer_what}")
+
+    def _xfer_end(self, outcome: str = None) -> float:
+        """The transfer is over: show its last progress, return its duration. With
+        outcome (cancelled, failed) the bar says so."""
+        was = self._xfer
+        self._flush_progress()
+        self._xfer, self._stop = None, False
+        dt = time.perf_counter() - self._t_xfer
+        if was and outcome:
+            self._settle_bar()
+            set_var(self.progress_var, outcome)
+            self.tile_xfer.set(f"{self._sent:,} B", outcome)
+        return dt
+
+    def _settle_bar(self):
+        """An unfinished transfer: the bar stays where it got to (empty without a size)."""
+        if not self._xfer_total:
+            self.progress.configure(mode="determinate", maximum=1, value=0)
+
+    def _show_end(self, n: int, dt: float = None, stopped: bool = False, failed: str = None):
+        """The bar, label and tile at the end: done (dt), stopped or failed (its status)."""
+        total = self._xfer_total
+        if failed:
+            self._settle_bar()
+            set_var(self.progress_var, f"failed: {failed} after {n:,} B")
+            self.tile_xfer.set(f"{n:,} B", f"failed, {failed}")
+        elif stopped:
+            self._settle_bar()
+            of = f" of {total:,}" if total else ""
+            set_var(self.progress_var, f"stopped after {n:,}{of} B")
+            self.tile_xfer.set(f"{n:,} B", f"stopped, {100 * n // total} %" if total else "stopped")
+        else:
+            rate = kbit_s(n, dt)
+            self.progress.configure(mode="determinate", maximum=max(n, 1), value=n)
+            set_var(self.progress_var, f"done: {n:,} B in {dt:.1f} s, {rate} kbit/s")
+            self.tile_xfer.set(f"{rate} kbit/s", f"average, {n:,} B in {dt:.1f} s")
 
     # ---- completion ----------------------------------------------------------
     def _done(self, handler, result):
@@ -403,6 +634,7 @@ class FileSystemFeature(Feature):
     def _failed(self, exc):
         self._future = None
         self._running = None
+        self._xfer_end("failed")
         if isinstance(exc, fsp.FsError) and exc.status is not None:
             if exc.op in (fsp.OPS["WRITE"], fsp.OPS["READ"], fsp.OPS["CLOSE"]) and \
                     exc.status not in (fsp.ST_BAD_ARG, fsp.ST_BAD_STATE, fsp.ST_BUSY):
@@ -413,6 +645,7 @@ class FileSystemFeature(Feature):
     def _cancelled(self):
         self._future = None
         self._running = None
+        self._xfer_end("cancelled")
         self.ctx.log("files: cancelled", "warn")
         self._update()
 
