@@ -508,16 +508,16 @@ def test_main_window_builds_and_switches(root, monkeypatch):
         return [k for k, p in win.pages.items() if p.built and p.frame.winfo_manager()]
     assert mapped() == ["device"]
 
-    # Connecting the first board from the device page opens the first feature;
+    # Connecting the first board leaves the window on the device page;
     # an unbuilt feature is not told (it shows the link when it is built)
     import asyncio
     asyncio.run(ctx.devices.connect("AA:00:00:00:00:01", "dev"))
     pump(ctx)
     assert win.status_pill.tone == "ok" and win.conn.name_var.get() == "dev"
     assert "ATT MTU 247" in win.status_var.get() and "more" not in win.status_var.get()
-    assert win.current_page == "feature0" and mapped() == ["feature0"]
+    assert win.current_page == "device" and mapped() == ["device"], "only the user changes pages"
     assert win.conn.dev_tree.set("AA:00:00:00:00:01", "state") == "Active"
-    assert not win.pages["feature1"].built
+    assert not any(win.pages[k].built for k in ("feature0", "feature1"))
     win.conn._caps_done((2, 244, 16, 247))
     assert win.conn._facts["Window"].get() == "16" and win.conn.details.is_open
 
@@ -532,7 +532,9 @@ def test_main_window_builds_and_switches(root, monkeypatch):
     assert prov_tab.stepper.current == 1
 
     assert win.mode_btn.mode == th.DARK and "dark" in win.mode_tip.text
+    logo = str(win._logo.cget("image"))
     win._toggle_mode()
+    assert str(win._logo.cget("image")) == logo, "the logo keeps its blue in dark mode"
     assert win.theme.mode == th.DARK and win.mode_var.get() == th.DARK
     assert win.mode_btn.mode == th.LIGHT and "light" in win.mode_tip.text
 

@@ -365,7 +365,7 @@ class PairingDevice:
                     raise
                 if attempt == auth_retries:
                     raise PairingError(f"the {self.label} device does not trust this PC: authenticate "
-                                       "it on the Host access page first") from None
+                                       "it on the Host Access page first") from None
                 await asyncio.sleep(delay)
 
     def _notified(self, _sender, data):

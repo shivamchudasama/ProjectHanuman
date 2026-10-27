@@ -21,8 +21,8 @@ from blehost.features.provisioning import ProvisioningFeature
 from blehost.protocols.setu import SETUService
 from blehost.ui.main_window import MainWindow
 
-# Feature pages, in rail order. Add new features here. The first is shown after
-# connecting: Host access, since a provisioned device serves only its trusted host.
+# Feature pages, in rail order. Add new features here. Host Access comes first, since a
+# provisioned device serves only its trusted host.
 FEATURES = [HostAccessFeature, HexUploadFeature, FileSystemFeature, EcuFeature, ProvisioningFeature,
             PairingFeature]
 

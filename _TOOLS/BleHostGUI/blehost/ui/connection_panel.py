@@ -40,7 +40,7 @@ STALE_KEYS_TEXT = (
     "it was made.\n\nThis happens when the board has forgotten this PC (chip erase, wipe, "
     "DEPROVISION or Button 3 held): Windows encrypts with its old keys, the board has none, "
     "and Windows drops the link.\n\nForget the keys on this PC now? Then connect again "
-    "(press the board's Button 3 if LED1 is not blinking) and authenticate on Host access.\n\n"
+    "(press the board's Button 3 if LED1 is not blinking) and authenticate on Host Access.\n\n"
     "If the board still trusts this PC, forgetting the keys here makes it refuse this PC "
     "until its Button 3 is held.")
 
@@ -409,7 +409,7 @@ class ConnectionPanel(ttk.Frame):
     def _forget(self, addr, name):
         def done(result):
             self.ctx.log(f"{name or addr}: pairing keys forgotten on this PC ({result}); connect "
-                         "again, then authenticate on Host access")
+                         "again, then authenticate on Host Access")
         self.ctx.run(self.ctx.devices.unpair_address(addr), on_done=done,
                      on_error=self._error("Forget pairing"))
 

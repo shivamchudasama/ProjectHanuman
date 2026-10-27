@@ -43,7 +43,7 @@ def choice_name(text: str) -> str:
 
 NO_SERVICE = "no Pairing service (not provisioned?)"
 CONNECT_HINT = ("Connect both boards on the Device page: provisioned boards that trust this "
-                "PC (Host access).")
+                "PC (Host Access).")
 
 
 def row_status(result) -> str:

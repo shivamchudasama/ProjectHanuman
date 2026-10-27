@@ -25,6 +25,9 @@ from .widgets import Pill, Tooltip, set_icon, set_var
 APP_TITLE = "BLE Host"
 LOG_LINES = 2000                       # the log page keeps this many lines
 RAIL_ICON = 20                         # rail glyphs, pixels at 100 %
+# The app's mark (window icon, rail logo) in one blue in both modes: the dark
+# palette's accent is a light cyan, on which the white glyph has no contrast
+BRAND = th.PALETTES[th.LIGHT]["accent"]
 
 
 class Page:
@@ -114,7 +117,7 @@ class MainWindow:
         title bar and icon first, so the first frame is the finished one."""
         self.root.update_idletasks()
         self.theme.title_bar()
-        self._app_icons = icons.app_icon(self.root, th.PALETTES[th.LIGHT]["accent"])
+        self._app_icons = icons.app_icon(self.root, BRAND)
         if self._app_icons:
             self.root.iconphoto(True, *self._app_icons)
         self.root.deiconify()
@@ -269,7 +272,7 @@ class MainWindow:
         else:
             self.mode_btn.configure(image="", text="☀" if dark else "☾")
         self.mode_btn.mode = target                     # what a click switches to (tests)
-        logo = icons.app_icon(self._logo, palette["accent"], sizes=(t.px(28),))
+        logo = icons.app_icon(self._logo, BRAND, sizes=(t.px(28),))
         self._logo.configure(image=logo[0] if logo else "", text="" if logo else APP_TITLE)
         for page in self.pages.values():
             self._rail_icon(page)
@@ -307,10 +310,7 @@ class MainWindow:
                 self.ctx.log(f"connected to {name}")
             for f in self._built_features():
                 f.on_connected(info)
-            # The first board: on to the first feature; more boards: stay to connect them
-            if (not info.get("switched") and self.current_page == "device" and self.features
-                    and len(self.ctx.devices.connected()) <= 1):
-                self.show_page("feature0")
+            # The window stays on the page the user is on: only the user changes pages
         elif state == LinkState.IDLE and "reason" in info:     # logged by _on_devices
             for f in self._built_features():
                 f.on_disconnected(info["reason"])

@@ -6,7 +6,7 @@ This closes audit finding F1, the unauthenticated host link ([../Audit/FINDINGS.
 
 ## How it works
 
-1. **Credential.** The PC gets a host credential from the CA that provisions the devices: its own P-256 key and a host certificate (CA:FALSE, digitalSignature, extendedKeyUsage **clientAuth**), plus a copy of the CA certificate. It is made on the GUI's Host access page or with `setu_client.py hostcert`. A field laptop carries the credential, not the CA key.
+1. **Credential.** The PC gets a host credential from the CA that provisions the devices: its own P-256 key and a host certificate (CA:FALSE, digitalSignature, extendedKeyUsage **clientAuth**), plus a copy of the CA certificate. It is made on the GUI's Host Access page or with `setu_client.py hostcert`. A field laptop carries the credential, not the CA key.
 2. **Window.** Someone presses the device's Button 3. The device advertises for 2 minutes, with LED1 blinking. To replace the bonded host, hold the button for 3 s: the old host's bond goes first.
 3. **Handshake.** The PC connects and sends HELLO: a nonce, a fresh ECDH key and its host certificate.
    - The device checks the certificate against its CA and the host role.
@@ -32,7 +32,7 @@ This closes audit finding F1, the unauthenticated host link ([../Audit/FINDINGS.
 | PC: [pki/host.py](../../_TOOLS/BleHostGUI/blehost/pki/host.py), [pki/authority.py](../../_TOOLS/BleHostGUI/blehost/pki/authority.py) `issue_host()` | The host credential and its issuance |
 | PC: [protocols/host_auth.py](../../_TOOLS/BleHostGUI/blehost/protocols/host_auth.py) | Codecs, the cryptography (`cryptography`), `HostAuthSession` |
 | PC: [core/winrt_pairing.py](../../_TOOLS/BleHostGUI/blehost/core/winrt_pairing.py), `BleLink.pair_with_pin()` | Windows pairing with `DevicePairingKinds.ProvidePin` |
-| PC: [features/host_access.py](../../_TOOLS/BleHostGUI/blehost/features/host_access.py) | The Host access page, first in the rail |
+| PC: [features/host_access.py](../../_TOOLS/BleHostGUI/blehost/features/host_access.py) | The Host Access page, first in the rail |
 
 ## Design decisions
 
@@ -71,7 +71,7 @@ This closes audit finding F1, the unauthenticated host link ([../Audit/FINDINGS.
 
 ## Using it
 
-- **GUI.** The Host access page:
+- **GUI.** The Host Access page:
   1. Load the host credential, or issue one from a CA folder.
   2. Press the device's Button 3 and connect (Device page).
   3. Click "Authenticate & pair". Windows pairs without a prompt.

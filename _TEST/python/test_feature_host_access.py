@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""The Host access page (_TOOLS/BleHostGUI/blehost/features/host_access.py).
+"""The Host Access page (_TOOLS/BleHostGUI/blehost/features/host_access.py).
 
 The page's logic (credential load/issue, which buttons are enabled, status,
 authenticate, forget, abort, the pills and the step list) runs against
