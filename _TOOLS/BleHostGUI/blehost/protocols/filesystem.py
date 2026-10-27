@@ -81,6 +81,7 @@ class Reply:
     data: bytes = b""
     entries: list = field(default_factory=list)
     eof: bool = False                     # read_to(): reading stopped at the end of the file
+    written: int = 0                      # write_to(): bytes of this write the device took
 
     @property
     def ok(self) -> bool:
@@ -301,6 +302,26 @@ class FileSystemSession:
         for i in range(0, len(data), ARG_MAX):
             total = (await self.run("WRITE", data[i:i + ARG_MAX])).total
         return total
+
+    async def write_to(self, data: bytes, progress=None, stop=None) -> Reply:
+        """Write `data` to the open file, ARG_MAX bytes per WRITE. Ends early at a
+        failed WRITE (its status) or when stop() is true (checked between WRITEs).
+        Returns the last WRITE's Reply, its `written` the bytes the device took;
+        progress(bytes so far) follows each WRITE that succeeded."""
+        if not data:
+            raise ValueError("nothing to write")
+        written = 0
+        while True:
+            r = await self.command("WRITE", data[written:written + ARG_MAX])
+            if not r.ok:
+                break
+            written = min(written + ARG_MAX, len(data))
+            if progress:
+                progress(written)
+            if written >= len(data) or (stop and stop()):
+                break
+        r.written = written
+        return r
 
     async def read(self, count: int = None) -> bytes:
         """Up to READ_MAX bytes; b"" at the end of the file."""

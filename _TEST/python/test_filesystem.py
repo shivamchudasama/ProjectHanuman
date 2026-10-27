@@ -186,6 +186,52 @@ def reads(fsdev) -> list:
     return [a for _, o, a in fsdev.commands if o == fsp.OPS["READ"]]
 
 
+def writes(fsdev) -> list:
+    """The arguments of the WRITEs the device received."""
+    return [a for _, o, a in fsdev.commands if o == fsp.OPS["WRITE"]]
+
+
+def test_write_to_in_pieces_with_progress(session, fsdev):
+    data = bytes(range(200)) * 3                          # 600 B: 240, 240, 120
+    run(session.openw("/w"))
+    progress = []
+    r = run(session.write_to(data, progress=progress.append))
+    assert r.ok and r.op == fsp.OPS["WRITE"] and r.written == 600 and r.total == 600
+    assert [len(a) for a in writes(fsdev)] == [240, 240, 120] and progress == [240, 480, 600]
+    r = run(session.write_to(b"x"))
+    assert r.written == 1 and r.total == 601, "total is the file's count, written this write's"
+    run(session.close())
+    assert fsdev.files["/FLASH_DISK:/w"] == data + b"x"
+    with pytest.raises(ValueError):
+        run(session.write_to(b""))
+
+
+def test_write_to_stops_when_asked(session, fsdev):
+    run(session.openw("/w"))
+    progress = []
+    r = run(session.write_to(bytes(1000), progress=progress.append, stop=lambda: len(progress) == 2))
+    assert r.ok and r.written == 480 and len(writes(fsdev)) == 2
+    assert run(session.write_to(bytes(520))).total == 1000, "the next write carries on"
+
+
+def test_write_to_keeps_the_count_before_a_failure(session, fsdev):
+    real = fsdev.handle
+
+    def handle(payload):
+        if payload[1] == fsp.OPS["WRITE"] and len(writes(fsdev)) == 2:
+            fsdev.fail["WRITE"] = 4
+        return real(payload)
+    fsdev.handle = handle
+    run(session.openw("/w"))
+    r = run(session.write_to(bytes(1000)))
+    assert not r.ok and r.status_name == "NO_SPACE" and r.written == 480
+    assert r.closes_file and fsdev.open is None
+    # Without an open file the first WRITE is refused, nothing written
+    del fsdev.fail["WRITE"]
+    r = run(session.write_to(b"abc"))
+    assert r.status_name == "BAD_STATE" and r.written == 0
+
+
 def test_read_to_the_end_from_the_position(session, fsdev):
     data = bytes(range(256)) * 3
     fsdev.files["/FLASH_DISK:/f"] = bytearray(data)
