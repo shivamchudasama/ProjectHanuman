@@ -94,7 +94,8 @@ int main(void)
    (void)gi_HostAuthButton_Init();
 
 #if defined(CONFIG_CANIF)
-   // The CAN / CAN FD controller (MCP2518FD Click): boot configuration, traffic
+   // The CAN / CAN FD controller (MCP2518FD Click): its driver (deferred until
+   // the DK buttons have their GPIO callbacks), boot configuration, traffic
    // log. Without the click it logs an error and the rest runs on.
    (void)gi_CanIf_Init();
 #endif // CONFIG_CANIF

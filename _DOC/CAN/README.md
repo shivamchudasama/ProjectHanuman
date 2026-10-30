@@ -59,6 +59,15 @@ cooperative thread, at priority 2, would loop for ever and starve Bluetooth. P1.
 nothing else on it and is pulled up, so a missing click leaves INT inactive. An LED pin
 could hold the line low through its driver.
 
+**Why the driver starts late.** NCS's `dk_buttons_init()` puts one GPIO callback on the
+list of every port that has a button (here port 1 for Button 0 and port 0 for Button 3).
+Because a callback is inserted at the head of each list, a port-1 callback added before
+it is cut off. If the driver started at boot, its INT callback would be lost, INT's level
+interrupt would never be switched off, the GPIO interrupt would never return, and the
+hardware watchdog would reset the device about every half second (audit finding F12). So
+the `can@0` node has `zephyr,deferred-init`, and `gi_CanIf_Init()`, called after the DK
+library, starts the driver.
+
 The overlay deletes the `button_1`, `button_2` and `led_3` nodes and their `sw1`, `sw2` and
 `led3` aliases. NCS's DK library builds its button and LED tables from those nodes, so it
 leaves the pins alone. Button 0 (`DK_BTN1`, the provisioning wipe) and LED0 (`DK_LED1`,
@@ -78,8 +87,9 @@ shared by both `FLASH_IF` variants: the sQSPI flash uses only P2.00–P2.05):
 
 - `spi21` with the pins above, CS on P1.08.
 - `mcp2518fd: can@0`: `microchip,mcp251xfd`, `spi-max-frequency` 8 MHz (SPIM21's limit;
-  the chip allows 18), `osc-freq` 40 MHz, `int-gpios` P1.12 active-low with pull-up, and a
-  `can-transceiver` with a 5 Mbit/s limit.
+  the chip allows 18), `osc-freq` 40 MHz, `int-gpios` P1.12 active-low with pull-up,
+  `zephyr,deferred-init` (started by `gi_CanIf_Init()`, see §1), and a `can-transceiver`
+  with a 5 Mbit/s limit.
 - `chosen { zephyr,canbus = &mcp2518fd; }`. `CanIf` uses the chosen controller.
 - The bitrates are not set here; `CanIf` sets them from Kconfig before it starts the
   controller.
@@ -92,9 +102,9 @@ shared by both `FLASH_IF` variants: the sQSPI flash uses only P2.00–P2.05):
 | `CONFIG_CAN`, `CONFIG_CAN_FD_MODE` | y | Zephyr's CAN API with CAN FD. `CAN_MCP251XFD` follows from the devicetree and selects SPI and CRC |
 | `CONFIG_CAN_MCP251XFD_INT_THREAD_STACK_SIZE` | 1024 | The driver's thread also runs `CanIf`'s callbacks (default 768) |
 | `CONFIG_CANIF` | y | Builds `_ASW/_CAN` (needs `CAN`) |
-| `CONFIG_CANIF_FD` | y | Boot mode: CAN FD (n: classic CAN 2.0) |
+| `CONFIG_CANIF_FD` | n | Boot mode: classic CAN 2.0, so a classic-only bus monitor sees all the traffic (y: CAN FD). A UDS target can still ask for CAN FD at runtime |
 | `CONFIG_CANIF_BITRATE` | 500000 | Boot nominal bitrate |
-| `CONFIG_CANIF_BITRATE_DATA` | 2000000 | Boot FD data-phase bitrate (frames with BRS) |
+| `CONFIG_CANIF_BITRATE_DATA` | 2000000 | Boot FD data-phase bitrate (frames with BRS), used only when booting in CAN FD mode |
 | `CONFIG_CANIF_LISTEN_ONLY` | n | Boot in listen-only mode: no ACK, no sending |
 | `CONFIG_CANIF_SELFTEST` | n | Loopback self-test at boot. **Bench only**: it sends two frames on the bus (§5) |
 | `CONFIG_CANIF_LOG_RX` | y | Traffic log on at boot |
@@ -148,7 +158,9 @@ not used in CAN FD or UDS.
 - **Self-test.** The self-test sends a classic frame and a 64-byte FD frame with BRS, both with
   ID `0x5A5`, in `CAN_MODE_LOOPBACK`. It then checks that they come back unchanged within
   100 ms. Zephyr maps that mode to the MCP2518FD's *external* loopback, which also drives
-  TXCAN. So the frames go out on the bus too, and the self-test is off by default.
+  TXCAN. So the frames go out on the bus too, and the self-test is off by default. The FD
+  frame is sent whenever the build has CAN FD (`CONFIG_CAN_FD_MODE`), even when the boot
+  mode is classic, so a classic-only bus monitor reports it as an error.
 - **Test frames.** With `CANIF_TEST_TX_PERIOD_MS` set, the system work queue sends ID `0x5A5`
   every period. The frame carries a 32-bit counter and then a byte pattern. In FD mode every
   other frame is a 64-byte FD frame with BRS. The frames are not sent while the controller
@@ -162,7 +174,7 @@ controller, everything except the lock, the listeners and `gi_CanIf_GetStatus()`
 
 | Function | Contract |
 |---|---|
-| `int gi_CanIf_Init(void)` | Called once from `main()`. Checks the controller is ready and supports the boot mode, runs the self-test if enabled, applies the boot configuration and starts the controller. Then installs the traffic log and schedules the test frames, if enabled. Returns `-EALREADY` on a second call. `-ENODEV`: no controller (click, wiring, supply). `-ENOTSUP`: boot mode FD without an FD controller. `-EIO`: the self-test failed, and the interface stays unusable. If only the start fails, the driver's error is returned and the interface is ready but stopped, so `gi_CanIf_Configure()` can retry. |
+| `int gi_CanIf_Init(void)` | Called once from `main()`, after `dk_buttons_init()`. Starts the deferred driver (`device_init()`; `-EALREADY` from a driver started at boot is fine, another error is logged as `can@0 init failed (…)`), checks the controller is ready and supports the boot mode, runs the self-test if enabled, applies the boot configuration and starts the controller. Then installs the traffic log and schedules the test frames, if enabled. Returns `-EALREADY` on a second call. `-ENODEV`: no controller (click, wiring, supply). `-ENOTSUP`: boot mode FD without an FD controller. `-EIO`: the self-test failed, and the interface stays unusable. If only the start fails, the driver's error is returned and the interface is ready but stopped, so `gi_CanIf_Configure()` can retry. |
 | `int gi_CanIf_Configure(const CanIfConfig_T *cfg, const void *owner)` | Applies `{b_fd, b_listenOnly, u32_bitrate, u32_bitrateData}`; `u32_bitrateData` is only used with `b_fd`. Returns `-EINVAL` for NULL or a zero bitrate, `-ENOTSUP` for FD without support, `-EBUSY` while someone other than `owner` holds the lock. Otherwise the driver's error, after the previous configuration has been restored. If restoring fails too, that is logged and the controller stays stopped. |
 | `int gi_CanIf_Lock(const void *owner)` / `int gi_CanIf_Unlock(const void *owner)` | Lock: `-EINVAL` for NULL, `-EALREADY` if `owner` holds it, `-EBUSY` if someone else does. Unlock: `-EPERM` if `owner` does not hold it. |
 | `int gi_CanIf_Send(const struct can_frame *f, k_timeout_t t)` | Sends from any thread and waits until the frame is on the bus. `t` bounds the wait for a free transmit buffer. Returns:<br>• `-EINVAL`: NULL, flags other than IDE/RTR/FDF/BRS, ID out of range, DLC above 8 (classic) or 15 (FD), RTR+FDF, BRS without FDF.<br>• `-ENOTSUP`: FD frame in classic mode.<br>• `-ENETDOWN`: controller stopped.<br>• `-EACCES`: listen-only.<br>• Otherwise `can_send()`'s error: `-ENETUNREACH` bus-off, `-EAGAIN` timeout, `-EIO`. |
@@ -180,7 +192,7 @@ both changes.
 ## 5. Serial output
 
 ```
-<inf> APP_LOG: sv_LogConfig: can@0 started: CAN FD, 500000 bit/s, data 2000000 bit/s
+<inf> APP_LOG: sv_LogConfig: can@0 started: classic CAN, 500000 bit/s
 <inf> APP_LOG: sv_LogFrame: RX 0x123 [8]
 <inf> APP_LOG: RX data
                  11 22 33 44 55 66 77 88                          |"3DUfw.
@@ -191,10 +203,16 @@ both changes.
 ```
 
 The device is named after its devicetree node (`can@0`). The "not logged" line comes with
-the first frame of the next one-second window.
+the first frame of the next one-second window. Booting in CAN FD mode (`CONFIG_CANIF_FD=y`),
+the first line reads `can@0 started: CAN FD, 500000 bit/s, data 2000000 bit/s`. FD frames,
+such as the `[64] FD BRS` line, are received only in CAN FD mode: at boot with
+`CONFIG_CANIF_FD=y`, or after a UDS target that asks for CAN FD.
 
-- **No click:** `can@0 not ready: check the click, its wiring and the DK's VDD (3.3 V)`.
-  The rest of the firmware runs on.
+- **No click:** `can@0 init failed (…)` from the driver's start, then `can@0 not ready: check
+  the click, its wiring and the DK's VDD (3.3 V)`. The rest of the firmware runs on.
+- **Reset loop with the click fitted**, only the driver's `Switched to mode …` lines and
+  `reset by watchdog` on the next boot: the INT callback was lost (§1, `zephyr,deferred-init`
+  missing or `gi_CanIf_Init()` called before the DK library).
 - **Self-test** (`CONFIG_CANIF_SELFTEST=y`, bench only): `loopback self-test passed
   (classic and FD)`. A failure (`loopback self-test failed (-116): …`) usually means MISO,
   MOSI or SCK is wrong, the oscillator is not running, or the click has no supply.
@@ -210,6 +228,10 @@ per-module table after each build ([MemReport](../../_TOOLS/MemReport/README.md)
 
 - Start it from `main()` with `gi_CanIf_Init()`, after the BLE-independent modules and
   before `gi_SETURouter_Start()`. `main.c` calls it only with `CONFIG_CANIF`.
+- Call it after `dk_buttons_init()` (`gi_ProvButton_Init()`), and keep `zephyr,deferred-init`
+  on the CAN node (§1; a `BUILD_ASSERT` checks it when the DK library is built). Any other
+  GPIO callback on port 0 or 1 that must survive the DK library has to be added after it
+  too.
 - A module that receives: `gi_CanIf_AddRxFilter()` with its IDs, and handle the frames in
   the callback (they arrive on `CanIf`'s thread). A module that sends: `gi_CanIf_Send()`,
   from its own thread.
@@ -266,7 +288,8 @@ against a scripted controller that implements Zephyr's CAN API
 
 The tests cover:
 
-- init: no controller, no FD, start failure, listen-only;
+- init: the deferred driver started first (or already started at boot), no controller, no
+  FD, start failure, listen-only;
 - every self-test failure;
 - frame validation and send errors;
 - filter matching, limits and removal with frames still queued;

@@ -68,7 +68,7 @@ shim/                  single-threaded stand-in for the Zephyr kernel, logging a
   zephyr/settings/, hw_unique_key.h, dk_buttons_and_leds.h (buttons and LEDs)
                          declarations only (tests define the functions); settings has
                          init, save, delete and the static handler macro
-  zephyr/device.h, devicetree.h  struct device, device_is_ready() (declared), DT_CHOSEN(),
+  zephyr/device.h, devicetree.h  struct device, device_is_ready() and device_init() (declared), DT_CHOSEN(),
                          DT_ALIAS() and DEVICE_DT_GET(): DEVICE_DT_GET(DT_CHOSEN(x)) is gst_simDev_x,
                          which the test defines; DT_NODE_HAS_STATUS_OKAY(x) is its SHIM_DT_OKAY_x
   zephyr/canbus/isotp.h  Zephyr's ISO-TP addresses, flags, error codes and contexts (recv_buf: a

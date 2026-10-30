@@ -9,7 +9,7 @@ Audit of the firmware (`_ASW`, `_LIB`), the PC tools (`_TOOLS`) and the tests (`
 1. Anyone in BLE range can wipe the device's identity, unpair it, change its files and drive UDS on the vehicle bus (F1). **Fixed since by host authentication**; what remains is listed under *Fixes*.
 2. The debug port is open and there is no bootloader (F2).
 
-F2 is kept on purpose while the BLE software and library stacks are built, and is to be closed when the application is developed on top of them. F1 (unauthenticated host link), F3 (no watchdog, halt on a fault), F4 (stack margins) and F6 (compiled-out storage init) are fixed; see *Fixes* at the end.
+F2 is kept on purpose while the BLE software and library stacks are built, and is to be closed when the application is developed on top of them. F1 (unauthenticated host link), F3 (no watchdog, halt on a fault), F4 (stack margins) and F6 (compiled-out storage init) are fixed, and so is F12 (a reset loop with the CAN click fitted, found on the bench afterwards); see *Fixes* at the end.
 
 ## How it was tested
 
@@ -43,6 +43,7 @@ Most of this code was written with an AI assistant, so the audit relies first on
 | F9 | Low | Concurrency | Upload COMMIT, file commands and flash jobs exclude each other by check-then-act on flags, and COMMIT clears its flag before the rename | Open |
 | F10 | Low | Test quality | 47 surviving mutants: mostly untested boundaries and error branches | Open, list below |
 | F11 | Info | Security | No certificate expiry or revocation (no wall clock) | Documented limitation |
+| F12 | **High** | Robustness | With the CAN click fitted, the device resets in a loop: the DK library cuts the MCP2518FD's INT callback off port 1's list, and INT's level interrupt then never ends (found on the bench, after the audit) | **Fixed** (deferred driver init) |
 
 ### F1: Unauthenticated host link (Critical for deployment)
 
@@ -136,6 +137,14 @@ Add one test per boundary (at the limit and one past it). The CSV with every mut
 
 `MBEDTLS_HAVE_TIME_DATE` is off because the device has no wall clock, and there is no revocation list. Both are documented. A compromised device certificate stays valid for ever; plan a deny-list update or a CA rotation for production.
 
+### F12: CAN INT callback lost, reset loop (High; found on the bench)
+
+**What.** With the MCP2518FD Click wired and powered, the device rebooted every half second. The log showed only the driver's `Switched to mode …` lines, and the reset cause was the hardware watchdog (`wdt31`, the task watchdog's fallback).
+
+**Why.** NCS's `dk_buttons_init()` (v3.4.1) puts one `gpio_callback` on the list of every port that has a button: Button 0 is on port 1 and Button 3 on port 0. `gpio_add_callback()` prepends, so the shared node's `next` points first at port 1's old head, the CAN driver's INT callback added at boot (`POST_KERNEL`), and then at port 0's old head, NULL. Port 1's list then ends at the DK library's callback, and the INT callback can no longer be reached. INT is a level interrupt: nothing disables it any more, the GPIOTE handler re-arms the pin's sense as long as INT is low, and the ISR never returns. The system timer's interrupt starves, so the task watchdog's 120 ms hardware fallback goes unfed. It was found with SWD: the callback list read from RAM, a breakpoint on the INT callback, and the GPIOTE latch.
+
+**Effect.** The device is unusable (no BLE, no CAN) whenever the click is fitted, in CAN FD and classic mode alike. Without the click, INT is pulled up and nothing shows.
+
 ## Checked and clean
 
 - **Parsing of outside bytes.** About 10 million fuzz runs under ASan over the SETU receive path (2 M, with the peer model checking every frame the device sends back), file commands (0.35 M), UDS messages (0.64 M), the UDS client on ECU answers (4.8 M, length and return contracts checked) and flash jobs on corrupted stored files (2 M, cleanup and image invariants checked).
@@ -221,3 +230,10 @@ RAM rose by about 8.6 KiB: the SPI build is at 88.8 % of 256 KiB, the **sQSPI bu
 - The unused `hw_unique_key_write_random()` path is gone, and so are the dead includes in `DeviceCert.h`.
 - `test_csr_generator.c` defines the firmware's own storage symbols. `huk-fail` became `huk-missing` (crypto init succeeds but leaves no HUK).
 - The systematic part: `_TEST/tools/check_config_symbols.py` runs in CI after each firmware build and fails when an `#if` in `_ASW`/`_LIB` tests a `CONFIG_` symbol the build does not know. Its first run found the two `DeviceCert.h` uses that the audit had missed. It has its own pytest.
+### F12: deferred CAN driver init
+
+- The `can@0` node in the board overlay has `zephyr,deferred-init`, so the kernel does not start the driver at boot. `gi_CanIf_Init()` starts it with `device_init()` (`-EALREADY` from a driver started at boot is accepted). `main()` calls it after `gi_ProvButton_Init()`, which runs `dk_buttons_init()`, so the INT callback goes onto port 1's list after the DK library's and stays reachable.
+- A `BUILD_ASSERT` in `CanIf.c` fails a build that uses the DK library without `zephyr,deferred-init` on the CAN node.
+- Checked on the board: no reset; the controller reaches classic CAN 2.0 mode; one test frame a second goes out, each completing (its TX interrupt is handled).
+- Tests: `canif` and `canif_classic` check that the driver is initialised before it is checked for readiness, and cover a driver started at boot and a failed init.
+- Still open: the root cause is in NCS's DK library. Any other port-1 or port-0 GPIO callback added before `dk_buttons_init()` is cut off the same way. Report it to Nordic.
