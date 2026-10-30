@@ -89,6 +89,12 @@
 		spi-max-frequency = <8000000>;
 		osc-freq = <40000000>;
 		int-gpios = <&gpio1 12 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		/* Initialised by gi_CanIf_Init(), after dk_buttons_init(): the DK
+		 * library's one GPIO callback, put on the lists of ports 0 and 1, cuts
+		 * off a port-1 callback added before it, and INT's level interrupt
+		 * would then never end (the hardware watchdog resets the device).
+		 */
+		zephyr,deferred-init;
 		status = "okay";
 
 		can-transceiver {

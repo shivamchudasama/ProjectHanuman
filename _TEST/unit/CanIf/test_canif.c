@@ -51,6 +51,8 @@ typedef struct
 
 static struct
 {
+   uint32_t u32_initCalls;                   /* device_init()                      */
+   int i_initRet;
    bool b_ready;                             /* device_is_ready()                  */
    can_mode_t t_cap;                         /* can_get_capabilities()             */
    int i_capRet;
@@ -77,9 +79,18 @@ static struct
    int i_getStateRet;
 } sst_can;
 
+int device_init(const struct device *dev)
+{
+   TEST_ASSERT_EQUAL_PTR(&gst_simDev_zephyr_canbus, dev);
+   sst_can.u32_initCalls++;
+   return sst_can.i_initRet;
+}
+
 bool device_is_ready(const struct device *dev)
 {
    TEST_ASSERT_EQUAL_PTR(&gst_simDev_zephyr_canbus, dev);
+   // The driver is deferred (zephyr,deferred-init): initialised first
+   TEST_ASSERT_EQUAL_UINT32_MESSAGE(1U, sst_can.u32_initCalls, "device_init() before device_is_ready()");
    return sst_can.b_ready;
 }
 
@@ -461,8 +472,12 @@ static void test_InitWithoutTheControllerLeavesEverythingRefused(void)
    struct can_frame st_frame = sst_Frame(0x100U, 0U, 1U);
    CanIfStatus_T st_status;
 
+   // The driver's init finds no controller
+   sst_can.i_initRet = -EIO;
    sst_can.b_ready = false;
    TEST_ASSERT_EQUAL_INT(-ENODEV, gi_CanIf_Init());
+   TEST_ASSERT_EQUAL_UINT32(1U, sst_can.u32_initCalls);
+   TEST_ASSERT_NOT_NULL(gcpt_SimLogFind("can@0 init failed (-5)"));
    TEST_ASSERT_NOT_NULL(gcpt_SimLogFind("can@0 not ready: check the click"));
 
    TEST_ASSERT_EQUAL_INT(-ENODEV, gi_CanIf_Send(&st_frame, K_NO_WAIT));
@@ -486,6 +501,24 @@ static void test_InitTwiceIsRefused(void)
 {
    sv_InitOk();
    TEST_ASSERT_EQUAL_INT(-EALREADY, gi_CanIf_Init());
+   TEST_ASSERT_EQUAL_UINT32_MESSAGE(1U, sst_can.u32_initCalls, "driver initialised once");
+}
+
+static void test_InitInitialisesTheDeferredDriver(void)
+{
+   TEST_ASSERT_EQUAL_INT(0, gi_CanIf_Init());
+   TEST_ASSERT_EQUAL_UINT32(1U, sst_can.u32_initCalls);
+   TEST_ASSERT_TRUE(sst_can.b_started);
+   TEST_ASSERT_NULL(gcpt_SimLogFind("init failed"));
+}
+
+static void test_InitAcceptsADriverInitialisedAtBoot(void)
+{
+   // Without zephyr,deferred-init the kernel has initialised it already
+   sst_can.i_initRet = -EALREADY;
+   TEST_ASSERT_EQUAL_INT(0, gi_CanIf_Init());
+   TEST_ASSERT_TRUE(sst_can.b_started);
+   TEST_ASSERT_NULL(gcpt_SimLogFind("init failed"));
 }
 
 static void test_InitCapabilitiesErrorIsReturned(void)
@@ -1171,6 +1204,8 @@ int main(void)
    UNITY_BEGIN();
    RUN_TEST(test_InitWithoutTheControllerLeavesEverythingRefused);
    RUN_TEST(test_InitTwiceIsRefused);
+   RUN_TEST(test_InitInitialisesTheDeferredDriver);
+   RUN_TEST(test_InitAcceptsADriverInitialisedAtBoot);
    RUN_TEST(test_InitCapabilitiesErrorIsReturned);
 #ifdef CONFIG_CAN_FD_MODE
    RUN_TEST(test_InitFdBootModeNeedsAnFdController);

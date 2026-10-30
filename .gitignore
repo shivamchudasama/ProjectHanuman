@@ -13,3 +13,6 @@ _CA/
 
 # Private OEM seed -> key algorithms (_ASW/_UDS/oem, _DOC/UDS/README.md)
 _ASW/_UDS/oem/
+
+# Chromium crashpad output (VS Code)
+debug.log

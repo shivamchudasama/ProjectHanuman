@@ -100,6 +100,14 @@ BUILD_ASSERT(CONFIG_CANIF_RX_QUEUE_DEPTH > CANIF_STATE_RESERVE, "CANIF_RX_QUEUE_
 BUILD_ASSERT((CONFIG_CANIF_MAX_FILTERS + CANIF_MONITOR_FILTERS) <= CONFIG_CAN_MCP251XFD_MAX_FILTERS,
    "CANIF_MAX_FILTERS plus the traffic log exceed the driver's filters");
 #endif // CONFIG_CAN_MCP251XFD_MAX_FILTERS
+#if defined(CONFIG_DK_LIBRARY)
+// dk_buttons_init() puts one gpio_callback on the list of every port with a
+// button, so the callbacks added to those ports before it are cut off: the
+// controller's INT callback among them, and its level interrupt then never
+// ends. The driver is initialised by gi_CanIf_Init(), after the DK library.
+BUILD_ASSERT(DT_PROP(DT_CHOSEN(zephyr_canbus), zephyr_deferred_init),
+   "the zephyr,canbus node needs zephyr,deferred-init (see gi_CanIf_Init())");
+#endif // CONFIG_DK_LIBRARY
 
 /******************************************************************************/
 /*                                                                            */
@@ -1062,11 +1070,13 @@ static void sv_CanIfThread(void *vpt_p1, void *vpt_p2, void *vpt_p3)
 /******************************************************************************/
 /**
  * @public        gi_CanIf_Init
- * @brief         Set up the CAN controller: check it is there and supports the
- *                boot mode, run the loopback self-test (CONFIG_CANIF_SELFTEST),
- *                apply the boot configuration and start it, install the traffic
- *                log (CONFIG_CANIF_LOG_RX) and the test frames
- *                (CONFIG_CANIF_TEST_TX_PERIOD_MS). Call once, from main().
+ * @brief         Set up the CAN controller: initialise its driver (deferred, see
+ *                the BUILD_ASSERT on zephyr,deferred-init), check it is there
+ *                and supports the boot mode, run the loopback self-test
+ *                (CONFIG_CANIF_SELFTEST), apply the boot configuration and start
+ *                it, install the traffic log (CONFIG_CANIF_LOG_RX) and the test
+ *                frames (CONFIG_CANIF_TEST_TX_PERIOD_MS). Call once, from main(),
+ *                after dk_buttons_init() (gi_ProvButton_Init()).
  * @return        0; -EALREADY if called before; -ENODEV if the controller is not
  *                ready (no click, wiring, supply); -ENOTSUP if the boot mode is CAN
  *                FD and the controller lacks it; -EIO if the self-test failed (the
@@ -1083,6 +1093,13 @@ int gi_CanIf_Init(void)
    if (sb_ready)
    {
       return -EALREADY;
+   }
+
+   // Initialise the driver now (zephyr,deferred-init); -EALREADY if it was at boot
+   i_ret = device_init(sstpt_dev);
+   if ((i_ret != 0) && (i_ret != -EALREADY))
+   {
+      APP_LOG_ERR("%s init failed (%d)", sstpt_dev->name, i_ret);
    }
 
    // Check if the driver found the controller
