@@ -89,7 +89,7 @@ The contract is in [_DOC/HostAuth/PROTOCOL.md](_DOC/HostAuth/PROTOCOL.md). Desig
 
 - MCP2518FD Click (MCP2518FD controller, ATA6563 transceiver, 40 MHz oscillator) on `spi21`: SCK P1.11, MOSI P1.14, MISO P1.09, CS P1.08, INT P1.12. The click takes over Button 1, Button 2 and LED3; Button 0 (wipe), Button 3 (host window), LED0 (pairing) and LED1 (host window) keep their roles. **The DK's VDD must be set to 3.3 V** (Board Configurator) before wiring.
 - `CanIf` (`_ASW/_CAN`): `gi_CanIf_Send()` and `gi_CanIf_AddRxFilter()` (callbacks on its own thread), `gi_CanIf_Configure()` (classic/FD, listen-only, bitrates; rolls back on failure), a bus lock for a flash session, state listeners, a rate-limited traffic log and `gi_CanIf_GetStatus()`.
-- Boot configuration in Kconfig (`CONFIG_CANIF_*`). A loopback self-test and periodic test frames exist for the bench; both are off, because both transmit on the bus.
+- Boot configuration in Kconfig (`CONFIG_CANIF_*`). A loopback self-test and periodic test frames exist for the bench; both transmit on the bus. The self-test is off; the test frames are on (one a second) for the bench and must be turned off (`CONFIG_CANIF_TEST_TX_PERIOD_MS=0`) on a vehicle.
 
 Wiring, configuration, the API contract, limitations and how UDS flashing and diagnostics sit on top are in [_DOC/CAN/README.md](_DOC/CAN/README.md).
 

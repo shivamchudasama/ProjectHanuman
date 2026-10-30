@@ -109,7 +109,7 @@ shared by both `FLASH_IF` variants: the sQSPI flash uses only P2.00–P2.05):
 | `CONFIG_CANIF_SELFTEST` | n | Loopback self-test at boot. **Bench only**: it sends two frames on the bus (§5) |
 | `CONFIG_CANIF_LOG_RX` | y | Traffic log on at boot |
 | `CONFIG_CANIF_LOG_RX_MAX_PER_SEC` | 20 | Most frames logged per second |
-| `CONFIG_CANIF_TEST_TX_PERIOD_MS` | 0 | Test frame period (0 = off). **Bench only** |
+| `CONFIG_CANIF_TEST_TX_PERIOD_MS` | 1000 | Test frame period (0 = off): on for the bench, one a second. **Bench only**: set 0 on a vehicle |
 | `CONFIG_CANIF_MAX_FILTERS` | 8 | User filters. Each takes a driver filter, as do the traffic log's two. The `CAN_MCP251XFD_MAX_FILTERS` (16) left over are for ISO-TP. A `BUILD_ASSERT` keeps the sum within the driver's |
 | `CONFIG_CANIF_RX_QUEUE_DEPTH` | 16 | Queue between the driver's thread and `CanIf`'s |
 | `CONFIG_CANIF_STACK_SIZE`, `CONFIG_CANIF_PRIORITY` | 2048, 6 | `CanIf`'s thread: below the SETU engine (5), above the File System Manager (10) |
@@ -251,7 +251,7 @@ per-module table after each build ([MemReport](../../_TOOLS/MemReport/README.md)
   yet.
 - No receive timestamps (`CONFIG_CAN_RX_TIMESTAMP` is off).
 - The self-test and the test frames transmit on whatever bus is connected. Keep both off
-  on a vehicle.
+  on a vehicle; `prj.conf` currently sends a test frame every second for the bench.
 - Raw CAN frames are not exposed over BLE (UDS is, [../UDS/PROTOCOL.md](../UDS/PROTOCOL.md)).
   The host tests cover `CanIf` against a scripted controller; only the click itself needs the
   board (the manual `hil-uds-tests` job is a placeholder).
